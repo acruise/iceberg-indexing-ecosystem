@@ -3,9 +3,10 @@ scalaVersion := "2.13.18"
 lazy val root = rootProject
   .settings(
     name := "progressive-indexing",
+    scalacOptions ++= Seq("-deprecation", "-feature", "-Xlint", "-release:21"),
+    javacOptions ++= Seq("--release", "21"),
     libraryDependencies ++= Seq(
-      //You can add library dependencies here, for example,
-      //"org.scalatest" %% "scalatest" % "3.2.19" % Test,
-      //"org.scalameta" %% "munit" % "1.2.3" % Test
+      "org.apache.iceberg" % "iceberg-core" % "1.12.0",
+      "org.scalameta" %% "munit" % "1.2.3" % Test
     )
   )

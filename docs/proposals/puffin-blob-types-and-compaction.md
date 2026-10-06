@@ -58,6 +58,29 @@ An identifier without a namespace is reserved for types defined by the Iceberg s
 
 The major version is part of the identifier, and a change that would cause an existing reader to misinterpret a payload MUST be published under a new identifier with an incremented major version. Compatible evolution, such as an additional optional property, does not change the identifier; the descriptor (Section 5) records it.
 
+The following identifiers are well formed. The first two are the types the specification already defines, and the remainder use namespaces under the reserved `example` domains to stand in for third parties.
+
+| Identifier | Namespace | Name | Major | Notes |
+|---|---|---|---|---|
+| `apache-datasketches-theta-v1` | (none) | `apache-datasketches-theta` | 1 | Defined by the Iceberg specification. |
+| `deletion-vector-v1` | (none) | `deletion-vector` | 1 | Defined by the Iceberg specification. |
+| `com.example.f16-presence-v1` | `com.example` | `f16-presence` | 1 | A third-party type. |
+| `com.example.f16-presence-v2` | `com.example` | `f16-presence` | 2 | An incompatible successor, and therefore a distinct type that readers of version 1 ignore. |
+| `org.example.lake.range-filter-v3` | `org.example.lake` | `range-filter` | 3 | A namespace may have any number of labels. |
+| `com.example.bloom-v2-v1` | `com.example` | `bloom-v2` | 1 | Legal, since only the final `-v` segment is the version, though a name that imitates a version invites confusion and SHOULD be avoided. |
+
+The next group shows the mistakes the grammar and the reservation rule are meant to catch.
+
+| Identifier | Why it is rejected or misleading |
+|---|---|
+| `f16-presence-v1` | Syntactically valid, but an identifier without a namespace is reserved for the Iceberg specification, so a third party MUST NOT write it. |
+| `com.example.f16-presence` | No major version. |
+| `com.example.f16-presence-v01` | The major version has a leading zero. |
+| `com.example.f16-presence-v1.1` | Minor versions are not part of the identifier; compatible changes are recorded in the descriptor instead. |
+| `com.example.F16-Presence-v1` | Upper-case letters are not permitted, so that identifiers compare correctly as byte strings. |
+| `com.example.f16_presence-v1` | Underscores are not permitted in a name. |
+| `com.example.f16.presence-v1` | Well formed, but it parses as the name `presence` in the namespace `com.example.f16`, which is probably not what its author intended. |
+
 ### 4.2 Property keys
 
 Blob `properties` are presently an unstructured map. We propose that keys without a namespace be reserved for the Iceberg specification and that their meaning be the same for every blob type that uses them. Keys defined by an individual blob type's descriptor are interpreted only in the context of that type and need no prefix. Keys that a third party wishes to attach across blob types it does not own MUST carry that party's namespace. The first reserved key would be `referenced-data-file`, promoted from its current status as a private constant in the deletion-vector writer (Section 6).
