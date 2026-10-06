@@ -1,0 +1,3 @@
+com.cloudera.iceberg.proposed.puffin.BuildConfigBlobType
+com.cloudera.acruise.progidx.f16presence.F16PresenceBlobType
+com.cloudera.acruise.progidx.ngram.NgramBloomBlobType
