@@ -22,6 +22,9 @@ final class IndexCatalog(cfg: SimConfig, metrics: Metrics) {
   private var nextContainerId = 0L
 
   def isVisible(k: IndexKey): Boolean = location.contains(k)
+
+  /** The Puffin file holding a visible blob. */
+  def containerOf(k: IndexKey): Option[Long] = location.get(k)
   def isPending(k: IndexKey): Boolean = pending.contains(k)
   def pendingCount: Int = pending.size
   def containerCount: Int = containers.size

@@ -5,6 +5,10 @@ lazy val root = rootProject
     name := "progressive-indexing",
     scalacOptions ++= Seq("-deprecation", "-feature", "-Xlint", "-release:21"),
     javacOptions ++= Seq("--release", "21", "-Xlint:all"),
+    // Simulations hold a whole table in memory; keep them out of sbt's own heap.
+    Test / fork := true,
+    Test / javaOptions += "-Xmx2g",
+    run / javaOptions += "-Xmx16g", // seed sweeps run many simulations at once
     libraryDependencies ++= Seq(
       "org.apache.iceberg" % "iceberg-core" % "1.12.0",
       "com.ibm.icu" % "icu4j" % "78.3",

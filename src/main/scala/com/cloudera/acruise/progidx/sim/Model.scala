@@ -8,6 +8,15 @@ final class ColumnData private (val values: Array[Double]) {
 
   def contains(v: Double): Boolean = java.util.Arrays.binarySearch(values, v) >= 0
 
+  /** How many distinct values lie in [lo, hi]. */
+  def countIn(lo: Double, hi: Double): Int = {
+    def insertion(x: Double, upper: Boolean): Int = {
+      val i = java.util.Arrays.binarySearch(values, x)
+      if (i < 0) -i - 1 else if (upper) i + 1 else i
+    }
+    if (hi < lo) 0 else math.max(0, insertion(hi, upper = true) - insertion(lo, upper = false))
+  }
+
   def anyIn(lo: Double, hi: Double): Boolean = {
     val i = java.util.Arrays.binarySearch(values, lo)
     i >= 0 || { val insertion = -i - 1; insertion < values.length && values(insertion) <= hi }
@@ -17,6 +26,7 @@ final class ColumnData private (val values: Array[Double]) {
   def matches(p: Predicate): Boolean = p match {
     case Eq(v)           => contains(v)
     case Between(lo, hi) => anyIn(lo, hi)
+    case In(vs)          => vs.exists(contains)
   }
 
   /** For integer-valued columns, the fraction of integers in [min, max] absent from the file: roughly the chance an
@@ -30,6 +40,7 @@ final class ColumnData private (val values: Array[Double]) {
   def overlapsMinMax(p: Predicate): Boolean = p match {
     case Eq(v)           => v >= min && v <= max
     case Between(lo, hi) => hi >= min && lo <= max
+    case In(vs)          => vs.exists(v => v >= min && v <= max)
   }
 }
 
@@ -53,6 +64,11 @@ object ColumnData {
 sealed trait Predicate
 final case class Eq(value: Double) extends Predicate
 final case class Between(lo: Double, hi: Double) extends Predicate
+
+/** A batch of keys, as a MERGE joins incoming changes or a batch of erasure requests names users: a file is needed if
+  * it holds any of them. For a probabilistic index the false-positive rate compounds with the batch size.
+  */
+final case class In(values: Seq[Double]) extends Predicate
 
 /** An immutable data file. Its id plays the role of an Iceberg data-file path: unique, never reused, never mutated. */
 final case class DataFile(
@@ -78,7 +94,7 @@ final case class SimConfig(
     partitionTicks: Long = 60L,
     retentionTicks: Long = 7 * 1440L,
     columnSpecs: IndexedSeq[ColumnSpec] = ColumnSpec.defaults,
-    dormantColumns: Set[String] = Set("trace_id"),
+    dormantColumns: Set[String] = Set("trace_id", "session_id", "tenant_id", "order_key", "customer_id"),
     // compaction
     fanout: Int = 4,
     maxGeneration: Int = 3,
@@ -95,6 +111,8 @@ final case class SimConfig(
     // indexing
     indexKinds: Seq[IndexKind] = Seq(BloomKind(), F16Kind()),
     indexBudgetPerTick: Double = 1000.0,
+    /** For schedulers whose compaction-time builds share the budget: how many ticks of it can be saved up. */
+    compactionBurstTicks: Long = 60L,
     topColumns: Int = 3,
     survivalHorizonTicks: Long = 7 * 1440L,
     exclusionPrior: Double = 0.5,
@@ -105,6 +123,15 @@ final case class SimConfig(
     usefulnessAlpha: Double = 0.01,
     /** Index bytes that cost as much to fetch as scanning one row unit. */
     indexBytesPerCostUnit: Double = 4096.0,
+    /** What one ranged read's latency is worth, in row units of one column transferred. */
+    requestCost: Double = 100.0,
+    rowGroupRows: Long = 1000L,
+    /** Columns a query reads, including the one its predicate is on. */
+    projectedColumns: Int = 4,
+    /** Read the other projected columns only for row groups holding a match. */
+    lateMaterialization: Boolean = true,
+    /** The share of a Puffin request one probe is expected to pay; a query reads many blobs per request. */
+    indexRequestShare: Double = 0.25,
     // Puffin
     puffinBatchBlobs: Int = 64,
     puffinMaxDelayTicks: Long = 10L,
@@ -115,4 +142,13 @@ final case class SimConfig(
     timelineBucketTicks: Long = 360L
 ) {
   def columns: Int = columnSpecs.size
+
+  /** The same configuration with another seed for data and workload, and for the key processes of active-set columns,
+    * which otherwise hash from a fixed salt.
+    */
+  def withSeed(s: Long): SimConfig =
+    copy(seed = s, columnSpecs = columnSpecs.map {
+      case a: ActiveSetColumn => a.copy(salt = a.salt ^ (s * 0x9e3779b97f4a7c15L))
+      case other              => other
+    })
 }

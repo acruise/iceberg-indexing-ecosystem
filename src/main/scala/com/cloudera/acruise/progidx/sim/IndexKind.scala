@@ -9,6 +9,12 @@ sealed trait IndexData { def sizeBytes: Int }
 final case class BloomData(sizeBytes: Int) extends IndexData
 final case class F16Data(index: F16Presence) extends IndexData { def sizeBytes: Int = index.sizeInBytes }
 
+/** A fixed-size Bloom filter of `bits` bits and `hashes` hash functions holding `distinct` values. */
+final case class SizedBloomData(bits: Int, hashes: Int, distinct: Int) extends IndexData {
+  def sizeBytes: Int = bits / 8
+  def falsePositiveRate: Double = SizedBloomKind.falsePositiveRate(bits, hashes, distinct)
+}
+
 /** A kind of index that can be built for one column of one data file and stored as a Puffin blob. */
 sealed trait IndexKind {
   def name: String
@@ -18,8 +24,8 @@ sealed trait IndexKind {
   def mergeable: Boolean
 
   def supports(p: Predicate): Boolean = p match {
-    case _: Eq      => supportsEquality
-    case _: Between => supportsRange
+    case _: Eq | _: In => supportsEquality
+    case _: Between    => supportsRange
   }
 
   /** How well this kind could possibly discriminate on `col`, in [0, 1], judged from cheap per-file statistics
@@ -30,10 +36,24 @@ sealed trait IndexKind {
   /** Size the index would have, knowable from cheap per-file statistics (distinct count) before building it. */
   def estimatedSizeBytes(col: ColumnData): Int
 
+  /** The same, for a kind that sizes itself for `settledDistinct`, the forecast distinct count of the settled file
+    * this one will eventually be merged into. Kinds sized per file ignore the forecast.
+    */
+  def estimatedSizeBytes(col: ColumnData, settledDistinct: Option[Double]): Int = estimatedSizeBytes(col)
+
   def build(col: ColumnData): IndexData
 
+  def build(col: ColumnData, settledDistinct: Option[Double]): IndexData = build(col)
+
+  /** Whether the composed index for a compaction output is worth keeping. `output` gives the output's distinct count,
+    * which theta sketches of the inputs would estimate without reading data. If not, nothing is rolled forward and
+    * the output's index, if any, is rebuilt.
+    */
+  def worthMerging(inputs: Seq[IndexData], output: ColumnData): Boolean = mergeable
+
   /** Compose the indexes of a compaction's inputs into the output's index without rereading data. */
-  def merge(inputs: Seq[IndexData]): IndexData = throw new UnsupportedOperationException(s"$name is not mergeable")
+  def merge(inputs: Seq[IndexData], output: ColumnData): IndexData =
+    throw new UnsupportedOperationException(s"$name is not mergeable")
 
   /** False only if the index proves no row matches `p`. `col` is the ground truth, which only probabilistic
     * structures consult, and `salt` makes their randomness deterministic per (file, column).
@@ -54,7 +74,8 @@ final case class BloomKind(falsePositiveRate: Double = 0.01, buildCostPerRow: Do
   def build(col: ColumnData): IndexData = BloomData(estimatedSizeBytes(col))
 
   def mightMatch(data: IndexData, col: ColumnData, p: Predicate, salt: Long): Boolean = p match {
-    case Eq(v) => col.contains(v) || BloomKind.uniform(salt, v) < falsePositiveRate
+    case Eq(v)  => col.contains(v) || BloomKind.uniform(salt, v) < falsePositiveRate
+    case In(vs) => vs.exists(v => col.contains(v) || BloomKind.uniform(salt, v) < falsePositiveRate)
     case _     => true
   }
 }
@@ -66,6 +87,71 @@ object BloomKind {
     val h = mixLast(mix(mix(mix(0x9747b28c, salt.toInt), (salt >>> 32).toInt), bits.toInt), (bits >>> 32).toInt)
     (finalizeHash(h, 4).toLong & 0xffffffffL).toDouble / 4294967296.0
   }
+}
+
+/** Equality-only, like [[BloomKind]], but sized for the forecast distinct count of the settled file this one will
+  * eventually be merged into, so that every generation's filter has the same size and merges exactly by OR.
+  * Before any file has settled there is no forecast, and the filter is sized for its own file.
+  *
+  * A merge is kept only while the output's distinct count, which theta sketches would estimate, holds the false
+  * positive rate at or below `maxMergedFalsePositiveRate`; past that, compaction rebuilds the filter at a fresh size.
+  */
+final case class SizedBloomKind(
+    falsePositiveRate: Double = 0.01,
+    maxMergedFalsePositiveRate: Double = 0.02,
+    buildCostPerRow: Double = 1.0
+) extends IndexKind {
+  val name = "sbloom"
+  val supportsEquality = true
+  val supportsRange = false
+  val mergeable = true
+
+  def staticUsefulness(col: ColumnData): Double = col.integralGapFraction.getOrElse(1.0)
+
+  private def sizeFor(distinct: Double): (Int, Int) = {
+    val n = math.max(1.0, distinct)
+    val bits = math.max(64, (math.ceil(-n * math.log(falsePositiveRate) / (math.log(2) * math.log(2)) / 64) * 64).toInt)
+    (bits, math.max(1, math.round(bits / n * math.log(2)).toInt))
+  }
+
+  private def target(col: ColumnData, settledDistinct: Option[Double]): Double =
+    math.max(col.distinct.toDouble, settledDistinct.getOrElse(0.0))
+
+  def estimatedSizeBytes(col: ColumnData): Int = estimatedSizeBytes(col, None)
+  override def estimatedSizeBytes(col: ColumnData, settledDistinct: Option[Double]): Int =
+    sizeFor(target(col, settledDistinct))._1 / 8
+
+  def build(col: ColumnData): IndexData = build(col, None)
+  override def build(col: ColumnData, settledDistinct: Option[Double]): IndexData = {
+    val (bits, hashes) = sizeFor(target(col, settledDistinct))
+    SizedBloomData(bits, hashes, col.distinct)
+  }
+
+  override def worthMerging(inputs: Seq[IndexData], output: ColumnData): Boolean =
+    inputs.map { case SizedBloomData(b, k, _) => (b, k); case other => sys.error(s"not an sbloom index: $other") }.distinct match {
+      case Seq((bits, hashes)) =>
+        SizedBloomKind.falsePositiveRate(bits, hashes, output.distinct) <= maxMergedFalsePositiveRate
+      case _ => false
+    }
+
+  override def merge(inputs: Seq[IndexData], output: ColumnData): IndexData = inputs.head match {
+    case SizedBloomData(bits, hashes, _) => SizedBloomData(bits, hashes, output.distinct)
+    case other                           => sys.error(s"not an sbloom index: $other")
+  }
+
+  def mightMatch(data: IndexData, col: ColumnData, p: Predicate, salt: Long): Boolean = (data, p) match {
+    case (d: SizedBloomData, Eq(v)) => col.contains(v) || BloomKind.uniform(salt, v) < d.falsePositiveRate
+    case (d: SizedBloomData, In(vs)) =>
+      vs.exists(v => col.contains(v) || BloomKind.uniform(salt, v) < d.falsePositiveRate)
+    case (_: SizedBloomData, _)     => true
+    case _                          => sys.error(s"not an sbloom index: $data")
+  }
+}
+
+object SizedBloomKind {
+  /** For a filter of `bits` bits and `hashes` hash functions holding `distinct` values, built directly or by OR. */
+  def falsePositiveRate(bits: Int, hashes: Int, distinct: Int): Double =
+    math.pow(1 - math.exp(-hashes.toDouble * distinct / bits), hashes.toDouble)
 }
 
 /** The f16 presence index: equality and range, at most 8 KiB, merged by OR. */
@@ -88,11 +174,12 @@ final case class F16Kind(buildCostPerRow: Double = 1.0) extends IndexKind {
   def estimatedSizeBytes(col: ColumnData): Int = F16Presence.HeaderBytes + math.min(2 * col.distinct, 8192)
   def build(col: ColumnData): IndexData = F16Data(F16Presence.of(col.values))
 
-  override def merge(inputs: Seq[IndexData]): IndexData =
+  override def merge(inputs: Seq[IndexData], output: ColumnData): IndexData =
     F16Data(inputs.map { case F16Data(i) => i; case other => sys.error(s"not an f16 index: $other") }.reduce(_ or _))
 
   def mightMatch(data: IndexData, col: ColumnData, p: Predicate, salt: Long): Boolean = (data, p) match {
     case (F16Data(idx), Eq(v))           => idx.mightEqual(v)
+    case (F16Data(idx), In(vs))          => vs.exists(idx.mightEqual)
     case (F16Data(idx), Between(lo, hi)) => idx.mightIntersect(lo, hi)
     case _                               => sys.error(s"not an f16 index: $data")
   }

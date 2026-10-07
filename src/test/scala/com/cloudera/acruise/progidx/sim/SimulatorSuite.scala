@@ -7,7 +7,7 @@ class CompactionSuite extends munit.FunSuite {
     for (_ <- 0 until n) table.add(DataFile(table.newFileId(), now / cfg.partitionTicks, 0, 100, now))
 
   private def compactFully(policy: CompactionPolicy, table: TableState, now: Long): Unit = {
-    var actions = policy.plan(table, now)
+    var actions = policy.plan(table, now, new AccessStats(cfg))
     while (actions.nonEmpty) {
       actions.foreach {
         case Finalize(f) => table.replace(f.copy(finalized = true))
@@ -15,7 +15,7 @@ class CompactionSuite extends munit.FunSuite {
           inputs.foreach(f => table.remove(f.id))
           table.add(DataFile(table.newFileId(), inputs.head.partition, g, inputs.map(_.rows).sum, now, fin))
       }
-      actions = policy.plan(table, now)
+      actions = policy.plan(table, now, new AccessStats(cfg))
     }
   }
 
@@ -45,14 +45,14 @@ class CompactionSuite extends munit.FunSuite {
     ingest(table, 10, 1)
     val young = table.liveFiles.head
     // 3 more gen-0 files are needed and they arrive at 4 per tick.
-    assertEqualsDouble(policy.expectedRemainingLife(young, table, 10), 0.75, 1e-9)
+    assertEqualsDouble(policy.expectedRemainingLife(young, table, 10, new AccessStats(cfg)), 0.75, 1e-9)
 
     val top = DataFile(table.newFileId(), 0, cfg.maxGeneration, 6400, 30)
     table.add(top)
-    assertEqualsDouble(policy.expectedRemainingLife(top, table, 30), 45.0, 1e-9) // dies at settle (t = 75)
+    assertEqualsDouble(policy.expectedRemainingLife(top, table, 30, new AccessStats(cfg)), 45.0, 1e-9) // dies at settle (t = 75)
 
     val settled = top.copy(id = table.newFileId(), finalized = true)
-    assertEquals(policy.expectedRemainingLife(settled, table, 30), Double.PositiveInfinity)
+    assertEquals(policy.expectedRemainingLife(settled, table, 30, new AccessStats(cfg)), Double.PositiveInfinity)
   }
 }
 
@@ -314,5 +314,295 @@ class HybridSuite extends munit.FunSuite {
     val m = new Simulator(cfg, Hybrid(), new TieredWithSettle(cfg)).run()
     val shape = m.byTagHour.collect { case ((tag, _), c) if tag.startsWith("status") => c }
     assert(shape.map(_.pruned).sum > 0)
+  }
+}
+
+class CompactionPathSuite extends munit.FunSuite {
+  test("ingest and compaction pay for their own indexes: eager rebuilds non-mergeable blooms at every compaction") {
+    val cfg = SimConfig(ticks = 720, indexKinds = Seq(BloomKind()))
+    val m = new Simulator(cfg, EagerAtWrite(), new TieredWithSettle(cfg)).run()
+    val ingestRows = cfg.ticks * cfg.filesPerTick * cfg.rowsPerFile
+    assert(m.writePathWork > 0)
+    assert(m.writePathWork <= ingestRows * cfg.topColumns, s"write path ${m.writePathWork} vs ingest $ingestRows")
+    assert(m.compactionPathWork > m.writePathWork, s"compaction ${m.compactionPathWork} vs write ${m.writePathWork}")
+    assertEquals(m.wrongExclusions, 0L)
+  }
+
+  test("building in the compaction commit reaches files too short-lived for background indexes") {
+    // Session lookups land on young files, which die before a background index on them becomes visible.
+    val cfg = SessionScenario(SimConfig(ticks = 900))
+    def sessionPruned(s: IndexScheduler): (Double, Metrics) = {
+      val m = new Simulator(cfg, s, new TieredWithSettle(cfg)).run()
+      val c = m.byTagHour.collect { case (("session lookups", _), cov) => cov }
+      (c.map(_.pruned).sum / c.map(_.prunable).sum, m)
+    }
+    val (background, _) = sessionPruned(SurvivalWeighted())
+    val (atCompaction, m) = sessionPruned(SurvivalWeighted(paths = Set(BuildPath.Compaction, BuildPath.Background)))
+    assert(atCompaction > background + 0.5, s"at compaction $atCompaction vs background only $background")
+    assertEquals(m.writePathWork, 0.0)
+    assert(m.compactionPathWork > 0)
+    assertEquals(m.wrongExclusions, 0L)
+  }
+
+}
+
+class ActiveSetColumnSuite extends munit.FunSuite {
+  private val sessions = ColumnSpec.defaults(ColumnSpec.indexOf("session_id")).asInstanceOf[ActiveSetColumn]
+  private val tenants = ColumnSpec.defaults(ColumnSpec.indexOf("tenant_id")).asInstanceOf[ActiveSetColumn]
+  private val meanSessionLife = 30 * math.exp(0.5 * 0.5 / 2)
+
+  private def keysActiveDuring(c: ActiveSetColumn, from: Long, until: Long): Set[Double] =
+    (from until until).flatMap(t => c.activeAt(t)).toSet
+
+  test("the process is a pure function of the tick") {
+    assertEquals(sessions.copy().activeAt(500).toSeq, sessions.activeAt(500).toSeq)
+  }
+
+  test("the active set settles at arrivals times mean lifetime") {
+    val n = sessions.activeAt(1000).length
+    assert(math.abs(n - 20 * meanSessionLife) < 0.15 * 20 * meanSessionLife, s"$n active sessions")
+    assert(math.abs(tenants.activeAt(1000).length - 2000) < 50)
+  }
+
+  test("keys active over a span grow as arrivals times (span + lifetime), not with the span alone") {
+    for (span <- Seq(4L, 16L, 60L, 240L)) {
+      val n = keysActiveDuring(sessions, 1000, 1000 + span).size
+      val expected = 20 * (span + meanSessionLife)
+      assert(math.abs(n - expected) < 0.15 * expected, s"span $span: $n keys, expected about $expected")
+    }
+  }
+
+  test("skewed activity: a few tenants write most rows") {
+    val rng = new scala.util.Random(1)
+    val counts = Seq.fill(20000)(tenants.value(rng, 1000)).groupBy(identity).view.mapValues(_.size).values.toSeq.sortBy(-_)
+    assert(counts.take(20).sum > 0.3 * 20000, s"top 20 tenants wrote ${counts.take(20).sum} of 20000 rows")
+    val active = tenants.activeAt(1000).length
+    val bottomHalf = counts.drop(active / 2).sum // tenants that wrote nothing count as zero
+    assert(bottomHalf < 0.15 * 20000, s"the smaller half of $active tenants wrote $bottomHalf of 20000 rows")
+  }
+
+  test("lookups ask for keys that were active during the queried span") {
+    val rng = new scala.util.Random(2)
+    for (_ <- 0 until 200) {
+      val from = 600L + rng.nextInt(600)
+      val Eq(v) = sessions.equality(rng, from, from + 60): @unchecked
+      assert(keysActiveDuring(sessions, from, from + 60).contains(v))
+    }
+  }
+}
+
+class SizedBloomSuite extends munit.FunSuite {
+  private val kind = SizedBloomKind()
+  private def col(n: Int, offset: Int = 0) = ColumnData.of(Array.tabulate(n)(i => (offset + i * 7919L).toDouble))
+
+  test("sized for the settled forecast, every generation's filter has the same size and merges exactly") {
+    val (a, b) = (col(64), col(64, 1000000))
+    val (fa, fb) = (kind.build(a, Some(1800.0)), kind.build(b, Some(1800.0)))
+    assertEquals(fa.sizeBytes, fb.sizeBytes)
+    val union = ColumnData.union(Seq(a, b))
+    assert(kind.worthMerging(Seq(fa, fb), union))
+    val merged = kind.merge(Seq(fa, fb), union).asInstanceOf[SizedBloomData]
+    assertEquals(merged.distinct, 128)
+    assert(merged.falsePositiveRate < 0.001, s"${merged.falsePositiveRate}")
+  }
+
+  test("a merge that would overfill the filter is refused, so compaction rebuilds it") {
+    val small = Seq(col(64), col(64, 1000000))
+    val filters = small.map(kind.build(_, None)) // no forecast yet: sized for 64 values each
+    assert(!kind.worthMerging(filters, ColumnData.union(small)))
+  }
+
+  test("the false-positive rate formula matches its target at the design size") {
+    val d = kind.build(col(1000), None).asInstanceOf[SizedBloomData]
+    assert(math.abs(d.falsePositiveRate - 0.01) < 0.002, s"${d.falsePositiveRate}")
+  }
+
+  test("theta-sized filters ride compaction instead of being rebuilt at every generation") {
+    val cfg = SessionScenario(SimConfig(ticks = 600))
+    def run(kinds: Seq[IndexKind]) =
+      new Simulator(cfg.copy(indexKinds = kinds), EagerAtWrite(), new TieredWithSettle(cfg)).run()
+    val perFile = run(Seq(BloomKind()))
+    val sized = run(Seq(SizedBloomKind()))
+    assert(sized.kind("sbloom").rolledForward > 0)
+    assert(sized.compactionPathWork < 0.5 * perFile.compactionPathWork,
+      s"compaction rebuilds: sized ${sized.compactionPathWork} vs per-file ${perFile.compactionPathWork}")
+    val pruned = (m: Metrics) => m.byTagHour.collect { case ((t, _), c) if t == "session lookups" => c.pruned }.sum
+    assert(pruned(sized) > 0)
+    assertEquals(sized.wrongExclusions, 0L)
+  }
+}
+
+class KeyBatchSuite extends munit.FunSuite {
+  test("IN predicates compound a bloom filter's false-positive rate with the batch size") {
+    val col = ColumnData.of(Array.tabulate(64)(_.toDouble))
+    val kind = BloomKind(falsePositiveRate = 0.01)
+    val data = kind.build(col)
+    val absent = (0 until 50).map(i => 1e9 + i)
+    val passes = (0 until 4000).count(salt => kind.mightMatch(data, col, In(absent.map(_ + salt * 100.0)), salt.toLong))
+    val expected = 1 - math.pow(0.99, 50)
+    assert(math.abs(passes / 4000.0 - expected) < 0.03, s"${passes / 4000.0} vs $expected")
+    assert(kind.mightMatch(data, col, In(Seq(1e12, 5.0)), 0L), "a present key must never be excluded")
+  }
+
+  test("key batches arrive on schedule, span every live partition, and name keys that were written") {
+    val cfg = CdcScenario(SimConfig())
+    val orders = cfg.columnSpecs(ColumnSpec.indexOf("order_key")).asInstanceOf[ActiveSetColumn]
+    val w = new Workload(cfg)
+    val batches = (0L until 200L).flatMap(t => w.queries(t).filter(_.tag.contains("cdc merges")).map(t -> _))
+    assertEquals(batches.map(_._1), (0L until 200L by 5).toSeq)
+    batches.foreach { case (t, q) =>
+      assertEquals(q.partitions, (0L to t / cfg.partitionTicks).toSeq)
+      val In(keys) = q.predicate: @unchecked
+      assert(keys.size > 40 && keys.forall(k => orders.activeAt(t).contains(k) || orders.activeAt(math.max(0, t - 1)).contains(k)))
+    }
+  }
+
+  test("CDC merges: a lower target rate cuts false positives that IN compounding inflates") {
+    val cfg = CdcScenario(SimConfig(ticks = 900))
+    def fp(kind: SizedBloomKind) = {
+      val m = new Simulator(cfg.copy(indexKinds = Seq(kind)), SurvivalWeighted(paths = Set(BuildPath.Compaction, BuildPath.Background)), new TieredWithSettle(cfg)).run()
+      assertEquals(m.wrongExclusions, 0L)
+      val c = m.byTagHour.collect { case (("cdc merges", _), c) => c }
+      c.map(_.falsePositive).sum / c.map(_.prunable).sum
+    }
+    val (onePercent, tenthPercent) = (fp(SizedBloomKind()), fp(SizedBloomKind(0.001, 0.002)))
+    assert(onePercent > 0.05, s"1% filters let through $onePercent of prunable rows")
+    assert(tenthPercent < onePercent / 3, s"0.1% filters: $tenthPercent vs 1%: $onePercent")
+  }
+}
+
+class CostModelSuite extends munit.FunSuite {
+  private val cfg = SimConfig(requestCost = 100, rowGroupRows = 1000, projectedColumns = 4)
+  private def file(rows: Long) = DataFile(0, 0, 0, rows, 0)
+  private val col = ColumnData.of(Array.tabulate(64)(_.toDouble))
+
+  test("a small file costs mostly requests: a footer and one chunk when nothing matches") {
+    assertEquals(CostModel.scan(cfg, file(100), col, Eq(1000)), 100 + (100 + 100.0))
+    assertEquals(CostModel.scanRequests(cfg, file(100), col, Eq(1000)), 2.0)
+  }
+
+  test("late materialization reads the other projected columns only where something matches") {
+    val big = file(8000) // eight row groups
+    val miss = CostModel.scan(cfg, big, col, Eq(1000))
+    val hit = CostModel.scan(cfg, big, col, Eq(5))
+    assertEquals(miss, 100 + 8 * 1100.0)
+    assertEquals(hit, miss + 3 * 1100.0, "one matching row group, three more columns")
+    assertEquals(CostModel.scan(cfg.copy(lateMaterialization = false), big, col, Eq(1000)), 100 + 32 * 1100.0)
+  }
+
+  test("matches spread over row groups as values do") {
+    val big = file(8000)
+    assertEquals(CostModel.matchingRowGroups(cfg, big, col, In(Seq(1000.0, 2000.0))), 0.0)
+    val many = CostModel.matchingRowGroups(cfg, big, col, Between(0, 63))
+    assert(many > 7.9 && many <= 8.0, s"$many")
+    assertEquals(col.countIn(10, 19.5), 10)
+  }
+
+  test("demand is tracked per column and partition age, so rare whole-table batches register on old partitions") {
+    val c = ErasureScenario(SimConfig(ticks = 1500))
+    val m = new Simulator(c, SurvivalWeighted(paths = Set(BuildPath.Compaction, BuildPath.Background)), new TieredWithSettle(c)).run()
+    val batches = m.byTagHour.collect { case (("erasure batches", _), cov) => cov }
+    assert(batches.map(_.pruned).sum / batches.map(_.prunable).sum > 0.5, "erasure batches should mostly be pruned")
+    assertEquals(m.wrongExclusions, 0L)
+  }
+}
+
+class StreamingSuite extends munit.FunSuite {
+  private def run(cfg: SimConfig, policy: CompactionPolicy): Metrics = new Simulator(cfg, NoIndexing, policy).run()
+  private def wamp(m: Metrics) = m.compactionRows.toDouble / m.ingestRows
+
+  test("micro-batches multiply commits, and tiered compaction rewrites each row once per tier") {
+    val cfg = StreamingScenario(SimConfig(ticks = 600))
+    val m = run(cfg, new TieredWithSettle(cfg))
+    assertEquals(m.ingestRows, cfg.ticks * cfg.filesPerTick * cfg.rowsPerFile)
+    assert(m.dataCommits.toDouble / cfg.ticks > cfg.filesPerTick, s"${m.dataCommits} commits")
+    assert(wamp(m) > cfg.maxGeneration - 0.5, s"write amplification ${wamp(m)}")
+  }
+
+  test("read-aware compaction merges small files only when enough queries will reach them before they settle") {
+    val cfg = StreamingScenario(SimConfig())
+    val policy = new ReadAwareTiered(cfg, maxOpenFiles = Int.MaxValue)
+    val table = new TableState
+    (0 until 8).foreach(_ => table.add(DataFile(table.newFileId(), 0, 0, cfg.rowsPerFile, 0)))
+    val quiet = new AccessStats(cfg)
+    assertEquals(policy.plan(table, 1, quiet), Nil)
+
+    val busy = new AccessStats(cfg)
+    (0L until 30L).foreach(t => busy.observe(t, Seq.fill(20)(Query(Seq(0L), 0, Eq(1)))))
+    val merges = policy.plan(table, 30, busy)
+    assertEquals(merges.size, 2)
+
+    val tiered = new TieredWithSettle(cfg).plan(table, 1, quiet)
+    assertEquals(tiered.size, 2, "plain tiering merges regardless")
+  }
+
+  test("read-aware compaction keeps the tiers where queries land") {
+    val read = StreamingScenario(SimConfig(ticks = 600))
+    val kept = run(read, new ReadAwareTiered(read))
+    assert(wamp(kept) > 0.5 * wamp(run(read, new TieredWithSettle(read))), s"read-aware ${wamp(kept)} on hot partitions")
+  }
+
+
+  test("a cap on open files bounds a partition even when nobody reads it") {
+    val cfg = StreamingScenario(SimConfig(ticks = 120, recentQueryFraction = 0.0))
+    val sim = new Simulator(cfg, NoIndexing, new ReadAwareTiered(cfg, maxOpenFiles = 100))
+    (0L until 50L).foreach(sim.step)
+    assert(sim.table.filesIn(0).size <= 100 + cfg.filesPerTick, s"${sim.table.filesIn(0).size} files")
+  }
+
+  test("reseeding changes active-set keys as well as data and workload") {
+    val cfg = SimConfig()
+    val sessions = (c: SimConfig) => c.columnSpecs(ColumnSpec.indexOf("session_id")).asInstanceOf[ActiveSetColumn]
+    assertNotEquals(sessions(cfg.withSeed(1)).activeAt(100).toSeq, sessions(cfg.withSeed(2)).activeAt(100).toSeq)
+    assertEquals(cfg.withSeed(3).seed, 3L)
+  }
+}
+
+class CompactionBudgetSuite extends munit.FunSuite {
+  test("budgeted compaction-time building stays within the background budget") {
+    val cfg = SessionScenario(SimConfig(ticks = 900, indexBudgetPerTick = 2000))
+    val m = new Simulator(cfg, SurvivalWeighted(paths = Set(BuildPath.Compaction, BuildPath.Background), budget = SyncBudget.Greedy), new TieredWithSettle(cfg)).run()
+    val spent = m.indexBuildWork + m.compactionPathWork
+    val allowance = cfg.indexBudgetPerTick * cfg.ticks
+    assert(spent <= allowance + 1e-6, s"spent $spent of $allowance")
+    assert(m.compactionPathWork > 0 && m.indexBuildWork >= 0)
+    assertEquals(m.wrongExclusions, 0L)
+  }
+
+  test("an unbudgeted run spends more than the budget would allow; a budgeted one skips what it can't afford") {
+    val cfg = SessionScenario(SimConfig(ticks = 900, indexBudgetPerTick = 2000))
+    val free = new Simulator(cfg, SurvivalWeighted(paths = Set(BuildPath.Compaction, BuildPath.Background)), new TieredWithSettle(cfg)).run()
+    val budgeted = new Simulator(cfg, SurvivalWeighted(paths = Set(BuildPath.Compaction, BuildPath.Background), budget = SyncBudget.Greedy), new TieredWithSettle(cfg)).run()
+    assert(free.compactionPathWork + free.indexBuildWork > cfg.indexBudgetPerTick * cfg.ticks)
+    assert(budgeted.syncBuildsSkipped > 0)
+  }
+}
+
+class ShadowPriceSuite extends munit.FunSuite {
+  private val both = Set[BuildPath](BuildPath.Compaction, BuildPath.Background)
+
+  test("priced builds with a commit stay within the shared budget and leave the background its share") {
+    val cfg = ErasureScenario(SimConfig(ticks = 1500, indexBudgetPerTick = 4000, indexKinds = Seq(SizedBloomKind(), F16Kind())))
+    def run(s: IndexScheduler) = new Simulator(cfg, s, new TieredWithSettle(cfg)).run()
+    val greedy = run(SurvivalWeighted(paths = both, budget = SyncBudget.Greedy))
+    val priced = run(SurvivalWeighted(paths = both, budget = SyncBudget.Priced))
+    assert(priced.indexBuildWork + priced.compactionPathWork <= cfg.indexBudgetPerTick * cfg.ticks + 1e-6)
+    assert(priced.indexBuildWork > greedy.indexBuildWork, s"background ${priced.indexBuildWork} vs greedy ${greedy.indexBuildWork}")
+    val erasure = (m: Metrics) => {
+      val c = m.byTagHour.collect { case (("erasure batches", _), cov) => cov }
+      c.map(_.pruned).sum / c.map(_.prunable).sum
+    }
+    assert(erasure(priced) > erasure(greedy) + 0.2, s"priced ${erasure(priced)} vs greedy ${erasure(greedy)}")
+    assertEquals(priced.wrongExclusions, 0L)
+  }
+
+  test("timing is a separate dimension: the same valuation can build at ingest, at compaction or in the background") {
+    val s = SurvivalWeighted(paths = Set(BuildPath.Ingest), budget = SyncBudget.Priced)
+    assertEquals(s.name, "valued@write/priced")
+    val cfg = SessionScenario(SimConfig(ticks = 300))
+    val m = new Simulator(cfg, s, new TieredWithSettle(cfg)).run()
+    assert(m.writePathWork > 0)
+    assertEquals(m.indexBuildWork, 0.0)
+    assert(m.writePathWork <= cfg.indexBudgetPerTick * cfg.ticks)
   }
 }
