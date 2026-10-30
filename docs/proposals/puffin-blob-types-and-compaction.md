@@ -89,7 +89,7 @@ Puffin gives Iceberg a well-specified container for statistics and indexes that 
 
 **On the implementation side,** we propose:
 
-* a service-provider interface in the Java library, discovered through [`java.util.ServiceLoader`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ServiceLoader.html), so that engines can handle registered blob types, compaction included, without compile-time knowledge of them.
+* a service-provider interface in the Java library, discovered through [`java.util.ServiceLoader`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ServiceLoader.html), so that engines can handle registered blob types, compaction included, without compile-time knowledge of them; it is the Java binding of a contract that lives in the format, and the other Iceberg implementations would bind it in their own idioms.
 
 The design has one property that we consider essential and that shapes most of the detailed choices: **because a data-file-scoped blob is derived from its data file and valid only while that file is live (Section 6.2), an implementation that ignores this proposal entirely** (an older reader, or a compactor with no knowledge of a given blob type) **can lose index coverage but can never produce an incorrect query result.** Every new obligation is therefore an opportunity to retain value rather than a new way to corrupt a table, which we believe is what makes it plausible to adopt incrementally and without a format version increment.
 
@@ -479,6 +479,8 @@ We draw attention to one consequence of the provenance rule in 8.1. A rewrite th
 
 ## 9. Java Service-Provider Interface
 
+Iceberg is a specification with several implementations, in Java, Rust, Python, Go and C++, and nothing that holds the ecosystem of Sections 4 through 8 together may depend on any one of them. The load-bearing parts of this proposal are therefore all at the level of the format: the identifier and its version, the descriptor, the reserved properties, the data-file binding and the configuration digest are bytes in a Puffin footer and documents in a registry, and an implementation in any language can produce and consume them. What each implementation needs beyond that is a way to find, at run time, the code that handles a given type identifier, and that is a question each language answers in its own idiom. This section gives the Java answer, because the Java library is the reference implementation and the one most engines embed, and it should be read as one binding of the contract rather than as the contract.
+
 ### 9.1 Interfaces
 
 We propose that the Java library define the following interfaces in `org.apache.iceberg.puffin`. The names are illustrative.
@@ -552,7 +554,7 @@ Two implementations claiming the same identifier constitute a configuration erro
 
 ### 9.3 Why ServiceLoader, and its limits
 
-Iceberg's usual extension pattern is a single implementation named by a catalog or table property and instantiated reflectively, as with `io-impl` and `catalog-impl`. That pattern suits a component of which exactly one is wanted. Blob types are an open set of which a process may need dozens at once, contributed by independent parties, and `ServiceLoader` is the JDK's standard mechanism for exactly that shape of problem.
+Iceberg's usual extension pattern is a single implementation named by a catalog or table property and instantiated reflectively, as with `io-impl` and `catalog-impl`. That pattern suits a component of which exactly one is wanted. Blob types are an open set of which a process may need dozens at once, contributed by independent parties, and `ServiceLoader` is the JDK's standard mechanism for exactly that shape of problem. It is also a JDK mechanism and nothing more: a Rust, Python or Go implementation will register its types by whatever means is natural there, and the descriptor, not the registration mechanism, is what makes a type the same type across them.
 
 Its limitation is class loading. Engines that isolate plugins in separate class loaders (Trino is the prominent example) may not see providers through the thread context class loader, and for that reason the interface includes `of` and `withAdditional`, allowing an engine to construct the set explicitly from whatever loader its plugin model provides. Out-of-band configuration stores (Section 7.3) are a single implementation per declared store, and so follow the usual `-impl` pattern rather than `ServiceLoader`; the in-band store is built into the library. An engine MAY also offer a catalog property listing blob types to exclude, for operators who need to disable a misbehaving implementation without removing it from the class path.
 
@@ -653,7 +655,7 @@ Data-file-scoped blobs would then inherit the specification's commit protocol an
 
 ## 13. Related Work Outside Iceberg
 
-Several systems have built one or more of the mechanisms this proposal asks for, and the summaries below are organized by which mechanism each is precedent for: per-file indexes under string-named, pluggable types; skip indexes materialized after the data was written; indexes over expressions; indexes built in the background with partial coverage; and the interaction of indexes with compaction. Each entry is drawn from the project's own documentation or source as of October 2026.
+Several systems have built one or more of the mechanisms this proposal asks for, and the summaries below are organized by which mechanism each is precedent for: per-file indexes under string-named, pluggable types; skip indexes materialized after the data was written; indexes over expressions; indexes built in the background with partial coverage; and the interaction of indexes with compaction. Each entry is drawn from the project's own documentation or source as of October 2026. One difference from Iceberg applies to several of them at once: Paimon, Pinot and Lucene are JVM projects, so a `ServiceLoader`-style registry can be load-bearing for their whole ecosystem in a way it cannot be for Iceberg, which has implementations in five languages and must carry its extension contract in the format itself (Section 9).
 
 ### 13.1 Apache Paimon's file index
 
