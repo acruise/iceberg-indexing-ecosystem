@@ -159,11 +159,12 @@ The proposal **does not attempt** to:
 * specify how a query planner should use an index
 * require any engine to build indexes at all
 * prescribe when indexes are built
-* constrain how a blob type is implemented.
+* constrain how a blob type is implemented
+* define any blob scope other than the data file.
 
-The last of these deserves emphasis. The proposal places two obligations on a blob type and no others. Blobs of the type MUST behave as the type's descriptor says they do, in every respect the descriptor speaks to (what they are bound to, what a reader may conclude from them, how they compose, how they respond to deletes, which configuration parameters they depend on), and any change to the type under which a reader relying on the old payload format or the old descriptor could draw a wrong conclusion MUST be published under a new major version (Section 4.1). Within those two rules the payload format, the algorithm, the language of the implementation and the manner of its distribution are the type's own business, and nothing in this document, in the registry or in the Java interfaces of Section 9 is intended to narrow them.
+On implementation: the proposal places two obligations on a blob type and no others. Blobs of the type MUST behave as the type's descriptor says they do, in every respect the descriptor speaks to (what they are bound to, what a reader may conclude from them, how they compose, how they respond to deletes, which configuration parameters they depend on), and any change to the type under which a reader relying on the old payload format or the old descriptor could draw a wrong conclusion MUST be published under a new major version (Section 4.1). Within those two rules the payload format, the algorithm, the language of the implementation and the manner of its distribution are the type's own business, and nothing in this document, in the registry or in the Java interfaces of Section 9 is intended to narrow them.
 
-It also leaves the existing snapshot-scoped statistics mechanism unchanged; table-wide statistics remain useful and their binding to snapshots is appropriate for what they describe.
+The last two deserve a word each. On scope: every normative mechanism in this proposal concerns blobs bound to exactly one data file. We propose nothing scoped to a table, a partition or a snapshot, and nothing bound to a unit smaller than a data file; a data-file-scoped blob may well describe the row groups or pages within its file, as a page-level filter would, but it is bound to the file and lives and dies with it. The `scope` values other than `data-file` in Section 5 exist only to classify the blob types the specification already has (snapshot-bound statistics and deletion vectors) and to give the in-band configuration blobs of Section 7.3 a home; the existing snapshot-scoped statistics mechanism is left unchanged, since table-wide statistics remain useful and their binding to snapshots is appropriate for what they describe, and blobs spanning several files are an open question (Section 14.9) rather than a proposal.
 
 ## 4. Blob Type Identifiers and the Registry
 
