@@ -234,32 +234,41 @@ A blob type *identifier* tells a reader whether it recognizes a payload, but eng
 
 We propose that each blob type have a *descriptor*, a small JSON document published with its definition, listed in the registry, and exposed at run time by its implementation (Section 9). The descriptor is the whole of the type's contract with the rest of the system: an implementation MUST behave as its descriptor says, and beyond that the proposal says nothing about how a type is implemented (Section 3). The fields we propose are as follows:
 
-* `type` is the identifier from Section 4
-* `title` and `definition` give a human-readable name and a URL for the normative description of the payload
-* `scope` is one of:
-  * `snapshot`, for blobs bound to a snapshot as statistics files are today
-  * `data-file`, for blobs bound to one data file as described in Section 6
-  * `delete-file`, which is the scope deletion vectors effectively have
-  * `puffin-file`, for blobs that describe nothing outside the Puffin file containing them and live exactly as long as it does (the in-band configurations of Section 7.3 are the one such type we propose).
-* `input-fields` states how many field ids the blob records and, optionally, which Iceberg primitive types those fields may have, and whether blobs of the type may describe expressions over those fields rather than the fields themselves (Section 7.8)
-* `properties` lists the type-specific keys, whether each is required, and the syntax of its value.
-* `compaction` declares the type's behavior when a rewrite replaces the data files it describes, using one of the four modes defined in Section 8:
-  * `drop`
-  * `rebuild`
-  * `merge`
-    * A type that declares `merge` also declares `merge-precision`, either:
-      * `exact`, when the merged blob is identical to the blob that would be built from the output data
-      * `conservative`, when it is a valid but possibly less selective approximation.
-  * `retain`.
-* `deletes` declares how row-level deletes affect the blob's meaning:
-  * `conservative` for types whose answers remain correct when some rows are deleted (any presence filter, since deleting rows can only introduce false positives)
-  * `approximate` for types whose values drift but remain usable as estimates (distinct-value sketches)
-  * `invalidated` for types that must not be used once a delete applies to their data file.
-* `inference` declares what a reader may conclude from a data-file-scoped blob, as Section 6.2 defines:
-  * `exclusion`, which is the default when the field is absent and the only value a type may take without the further declarations that section requires
-  * `location`
-  * `aggregate`.
-* `compression` lists the codecs that writers may apply, which allows a type such as `deletion-vector-v1`, whose definition forbids compression, to say so mechanically.
+| Field | Value | Meaning |
+|---|---|---|
+| `type` | identifier (Section 4.1) | The blob type the descriptor describes. |
+| `title` | string | A human-readable name. |
+| `definition` | URL | The normative description of the payload. |
+| `scope` | `snapshot`, `data-file`, `delete-file` or `puffin-file` | What the blob is bound to; values in the second table. |
+| `input-fields` | object with `count`, optional `types`, optional `expressions` | How many field ids the blob records, which Iceberg primitive types those fields may have, and whether blobs may describe expressions over the fields rather than the fields themselves (Section 7.8). |
+| `properties` | map from key to `{ required, syntax }` | The type-specific property keys, whether each is required, and the syntax of its value. |
+| `compaction` | `drop`, `rebuild`, `merge` or `retain` | The type's behavior when a rewrite replaces the data files it describes, as defined in Section 8; values in the second table. |
+| `merge-precision` | `exact` or `conservative` | Required when `compaction` is `merge`; values in the second table. |
+| `deletes` | `conservative`, `approximate` or `invalidated` | How row-level deletes affect the blob's meaning; values in the second table. |
+| `inference` | `exclusion` (default), `location` or `aggregate` | What a reader may conclude from a data-file-scoped blob, as Section 6.2 defines; values in the second table. |
+| `compression` | list of codec names | The codecs writers may apply, which lets a type such as `deletion-vector-v1`, whose definition forbids compression, say so mechanically. |
+| `config` | object with `schema`, `evaluation`, `composition` | The type's build configuration contract (Section 7.5). |
+
+The enumerated values are as follows.
+
+| Field | Value | Meaning |
+|---|---|---|
+| `scope` | `snapshot` | Bound to a snapshot, as statistics files are today. |
+| | `data-file` | Bound to one data file, as described in Section 6. |
+| | `delete-file` | The scope deletion vectors effectively have. |
+| | `puffin-file` | Describes nothing outside the Puffin file containing it and lives exactly as long as that file; the in-band configurations of Section 7.3 are the one such type we propose. |
+| `compaction` | `drop` | The writer produces no blob of this type for any output. |
+| | `rebuild` | The writer may compute a blob for an output from the output's data. |
+| | `merge` | The writer composes the sources' blobs into the output's blob when the conditions of Section 8.3 hold, and otherwise rebuilds. |
+| | `retain` | The blob is unaffected by the rewrite; applicable only to scopes other than `data-file`. |
+| `merge-precision` | `exact` | The merged blob is identical to the blob that would be built from the output data. |
+| | `conservative` | The merged blob is a valid but possibly less selective approximation. |
+| `deletes` | `conservative` | Answers remain correct when rows are deleted, as for any presence filter, since deleting rows can only introduce false positives. |
+| | `approximate` | Values drift but remain usable as estimates, as for distinct-value sketches. |
+| | `invalidated` | The blob must not be used once a delete applies to its data file. |
+| `inference` | `exclusion` | A reader may conclude only that a unit of the file contains no matching row; the default when the field is absent, and the only value a type may take without the further declarations Section 6.2 requires. |
+| | `location` | The blob states where within the file the matching rows are. |
+| | `aggregate` | The blob states a value computed over the file's rows. |
 
 A descriptor for a quantized presence index, the type that prompted this proposal, would read as follows:
 
@@ -355,11 +364,14 @@ A parameter can play more than one role, and a type's descriptor states which of
 
 We propose four reserved property keys, in the sense of Section 4.2, whose meaning is the same for every blob type:
 
-* `config-digest` **is the identity of the configuration**: the name of a hash algorithm, a colon, and the lower-case hexadecimal digest of the configuration document in its canonical form, for example `sha-256:9f86d0…`. Configuration documents are JSON, and the canonical form is that of the JSON Canonicalization Scheme ([RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)), so that any party holding the document can recompute the digest, and two blobs whose digests are equal are known to have been built under the same configuration without either document being fetched.
+| Key | Presence | Value | Meaning |
+|---|---|---|---|
+| `config-digest` | Required when the type declares evaluation parameters; otherwise optional | The name of a hash algorithm, a colon, and the lower-case hexadecimal digest of the configuration document in its canonical form, for example `sha-256:9f86d0…` | The identity of the configuration. Two blobs whose digests are equal are known to have been built under the same configuration without either document being fetched. |
+| `config-id` | Optional | An identifier, which SHOULD be namespaced in the manner of Section 4.1, for example `com.example.indexing.orders-sku-bloom` | A name for the configuration, meant for people and for stores that organize configurations by name. |
+| `config-version` | Optional | An opaque version string | The version of the named configuration. |
+| `config-store` | Optional | One of the store names declared in table properties (Section 7.3) | The store from which the configuration should be resolved; the table's default store applies when absent. |
 
-* `config-id` and `config-version` **name the configuration** in a form meant for people and for stores that organize configurations by name: an identifier, which SHOULD be namespaced in the manner of Section 4.1 (for example `com.example.indexing.orders-sku-bloom`), and an opaque version string within it. They are optional, and when they are present together with `config-digest`, the digest is authoritative. A reader that resolves a configuration by identifier and version MUST verify that the document it receives has the recorded digest, and MUST treat a mismatch as a failure to resolve.
-
-* `config-store` **optionally names the store** from which the configuration should be resolved, as one of the store names declared in table properties (Section 7.3). When it is absent, the table's default store applies.
+Configuration documents are JSON, and the canonical form is that of the JSON Canonicalization Scheme ([RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)), so that any party holding the document can recompute the digest. When `config-id` and `config-version` are present together with `config-digest`, the digest is authoritative: a reader that resolves a configuration by identifier and version MUST verify that the document it receives has the recorded digest, and MUST treat a mismatch as a failure to resolve.
 
 A blob whose type declares evaluation parameters MUST carry `config-digest`. A blob of any other type MAY carry it, and we expect that most blobs written by background indexers will, since provenance is cheap to record and expensive to reconstruct. The properties of a blob built under a named configuration would read as follows:
 
@@ -392,9 +404,13 @@ We also propose a revocation mechanism, because the most likely reason to want t
 
 The descriptor of Section 5 gains a `config` field with three members:
 
-* `schema` is the URL of a JSON Schema for the type's configuration documents.
-* `evaluation` lists the configuration keys that readers need in order to evaluate predicates, and is empty for a type whose payloads are self-describing; a type whose `evaluation` list is non-empty is the case in which Section 7.2 makes `config-digest` mandatory.
-* `composition` lists the keys that must agree for two blobs to be merged, or holds the single value `digest` when nothing short of identical configurations will do. Two configurations agree on a key only if both specify it and the values are equal, so a key that one configuration omits (because it chose an alternative way of setting the same parameter, say) makes the blobs non-composable rather than vacuously compatible. The quantized presence filter of Section 5 has no configurable parameters, so its descriptor would declare `"config": { "evaluation": [], "composition": [] }`; Section 7.6 works through a type for which neither list is empty.
+| Member | Value | Meaning |
+|---|---|---|
+| `schema` | URL | A JSON Schema for the type's configuration documents. |
+| `evaluation` | list of configuration keys | The keys readers need in order to evaluate predicates; empty for a type whose payloads are self-describing. A non-empty list is the case in which Section 7.2 makes `config-digest` mandatory. |
+| `composition` | list of configuration keys, or the single value `digest` | The keys that must agree for two blobs to be merged; `digest` when nothing short of identical configurations will do. |
+
+Two configurations agree on a key only if both specify it and the values are equal, so a key that one configuration omits (because it chose an alternative way of setting the same parameter, say) makes the blobs non-composable rather than vacuously compatible. The quantized presence filter of Section 5 has no configurable parameters, so its descriptor would declare `"config": { "evaluation": [], "composition": [] }`; Section 7.6 works through a type for which neither list is empty.
 
 ### 7.6 A worked example: character n-gram Bloom filters
 
