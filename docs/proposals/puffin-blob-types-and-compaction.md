@@ -411,7 +411,7 @@ The descriptor of Section 5 gains a `config` field with four members:
 | `evaluation` | list of configuration keys | The keys readers need in order to evaluate predicates; empty for a type whose payloads are self-describing. A non-empty list is the case in which Section 7.2 makes `config-digest` mandatory. |
 | `composition` | list of configuration keys, or the single value `digest` | The keys that must agree for two blobs to be merged; `digest` when nothing short of identical configurations will do. |
 
-Two configurations agree on a key only if both specify it and the values are equal, so a key that one configuration omits (because it chose an alternative way of setting the same parameter, say) makes the blobs non-composable rather than vacuously compatible. The quantized presence filter of Section 5 has no configurable parameters, so its descriptor would declare `"config": { "evaluation": [], "composition": [] }`; Section 7.6 works through a type for which neither list is empty.
+Two configurations agree on a key only if both specify it and the values are equal, so a key that one configuration omits (because it chose an alternative way of setting the same parameter, say) makes the blobs non-composable rather than vacuously compatible. The quantized presence filter of Section 5 has no configurable parameters, so its descriptor would declare `"config": { "schema": …, "schema-digest": …, "evaluation": [], "composition": [] }`; Section 7.6 works through a type for which neither list is empty.
 
 ### 7.6 A worked example: character n-gram Bloom filters
 
@@ -433,6 +433,7 @@ Such a filter is built by normalizing each value in a column, padding it with st
   "compression": ["none", "zstd"],
   "config": {
     "schema": "https://example.com/specs/ngram-bloom-v1/config.schema.json",
+    "schema-digest": "sha-256:c0ffee1a9b8c7d6e5f40312233445566778899aabbccddeeff00112233445566",
     "evaluation": ["normalization", "unicode-version", "gram-length", "hash", "seed", "hash-count"],
     "composition": ["normalization", "unicode-version", "gram-length", "hash", "seed", "hash-count", "bits"]
   }
