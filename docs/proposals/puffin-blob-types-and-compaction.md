@@ -147,7 +147,7 @@ The proposal's aims:
 * any party should be able to define a new Puffin blob type without coordination beyond owning a namespace
 * readers and writers should be able to discover the types they can handle at runtime
 * it should be possible to add a data-file-scoped blob to a table without rewriting data files or creating a snapshot
-* information about the responsibilities of compaction processes toward such blobs should be provided using precise, per-type information
+* compaction processes should be given precise, per-type statements of their responsibilities toward such blobs
 * any party that holds a blob should be able to determine the configuration under which it was built, so that the blob can be evaluated and composed correctly.
 
 It aims to do all of this without weakening the existing rule that readers ignore blob types they do not understand.
@@ -158,6 +158,9 @@ The proposal **does not attempt** to:
 * specify how a query planner should use an index
 * require any engine to build indexes at all
 * prescribe when indexes are built
+* constrain how a blob type is implemented.
+
+The last of these deserves emphasis. The proposal places two obligations on a blob type and no others. Blobs of the type MUST behave as the type's descriptor says they do, in every respect the descriptor speaks to (what they are bound to, what a reader may conclude from them, how they compose, how they respond to deletes, which configuration parameters they depend on), and any change to the type under which a reader relying on the old payload format or the old descriptor could draw a wrong conclusion MUST be published under a new major version (Section 4.1). Within those two rules the payload format, the algorithm, the language of the implementation and the manner of its distribution are the type's own business, and nothing in this document, in the registry or in the Java interfaces of Section 9 is intended to narrow them.
 
 It also leaves the existing snapshot-scoped statistics mechanism unchanged; table-wide statistics remain useful and their binding to snapshots is appropriate for what they describe.
 
@@ -179,7 +182,7 @@ lower-alpha = %x61-7A
 
 An identifier without a namespace is reserved for types defined by the Iceberg specification itself. This keeps the two existing identifiers valid exactly as written and gives the specification a short, readable vocabulary for the types it standardizes. Every other identifier MUST carry a namespace, and that namespace SHOULD be a reverse-DNS name controlled by the party defining the type, following the convention used for Java packages; for example, `com.example.f16-presence-v1`. Because the name segment cannot contain a dot, the namespace is everything before the final dot, and parsing is unambiguous.
 
-The major version is part of the identifier, and a change that would cause an existing reader to misinterpret a payload MUST be published under a new identifier with an incremented major version. Compatible evolution, such as an additional optional property, does not change the identifier; the descriptor (Section 5) records it.
+The major version is part of the identifier, and a change that would cause an existing reader to misinterpret a payload, or to rely on a descriptor obligation the type no longer meets, MUST be published under a new identifier with an incremented major version. Compatible evolution, such as an additional optional property or a descriptor change that only tightens an obligation, does not change the identifier; the descriptor (Section 5) records it.
 
 The following identifiers are well formed. The first two are the types the specification already defines, and the remainder use namespaces under the reserved `example` domains to stand in for third parties.
 
@@ -227,7 +230,7 @@ A blob type *identifier* tells a reader whether it recognizes a payload, but eng
 * how it behaves when its data file is compacted
 * how it behaves in the presence of row-level deletes.
 
-We propose that each blob type have a *descriptor*, a small JSON document published with its definition, listed in the registry, and exposed at run time by its implementation (Section 9). The fields we propose are as follows:
+We propose that each blob type have a *descriptor*, a small JSON document published with its definition, listed in the registry, and exposed at run time by its implementation (Section 9). The descriptor is the whole of the type's contract with the rest of the system: an implementation MUST behave as its descriptor says, and beyond that the proposal says nothing about how a type is implemented (Section 3). The fields we propose are as follows:
 
 * `type` is the identifier from Section 4
 * `title` and `definition` give a human-readable name and a URL for the normative description of the payload
@@ -738,7 +741,7 @@ A Puffin file may hold the blobs of one data file or of thousands, and the choic
 
 ### 14.11 Descriptor evolution
 
-This draft has already added two fields to the descriptor (`inference` in Section 6.2 and the `expressions` member of `input-fields` in Section 7.8), and more will follow. Descriptors are published in the registry and exposed by implementations, so the two copies can disagree, and an old implementation can expose a descriptor that lacks a field a reader has learned to consult. A rule is needed for which copy a reader trusts, for what the absence of a field means (the defaults given so far are each chosen to be the conservative reading), and for whether a change to a type's descriptor that tightens or loosens an obligation requires a new type version.
+This draft has already added two fields to the descriptor (`inference` in Section 6.2 and the `expressions` member of `input-fields` in Section 7.8), and more will follow. Descriptors are published in the registry and exposed by implementations, so the two copies can disagree, and an old implementation can expose a descriptor that lacks a field a reader has learned to consult. A rule is needed for which copy a reader trusts and for what the absence of a field means (the defaults given so far are each chosen to be the conservative reading). The versioning case is settled by Section 4.1: a descriptor change that relaxes an obligation is one an existing reader could be misled by and takes a new major version, while one that tightens an obligation does not.
 
 ### 14.12 Registry location and governance
 
