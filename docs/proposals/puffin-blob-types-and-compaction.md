@@ -562,7 +562,7 @@ The generality of the index metadata and extract layers suggests the remedy: a s
 * Its extract is not pinned to a snapshot but declares its validity by the liveness of the data files it references.
 * Its tracking file is the index manifest of Section 6.3, listing Puffin files and the data files their blobs describe in place of region files.
 
-Data-file-scoped blobs would then inherit the specification's commit protocol and catalog discovery without any change to table metadata, and the question raised in Section 13, whether the index manifest should be a new file type, would be settled. The cost is a second validity mode for extracts, and the suggestion has not yet been put to the specification's authors.
+Data-file-scoped blobs would then inherit the specification's commit protocol and catalog discovery without any change to table metadata, and the question raised in Section 13.2, whether the index manifest should be a new file type, would be settled. The cost is a second validity mode for extracts, and the suggestion has not yet been put to the specification's authors.
 
 **Gaps this proposal should close.** Two features of the index specification have no counterpart here and should, and a third has one here only because we borrowed it.
 
@@ -574,13 +574,61 @@ Data-file-scoped blobs would then inherit the specification's commit protocol an
 
 ## 13. Open Questions
 
-Whether the index manifest should be a new file type or a new content type within the existing manifest format is the question we are least sure of, and the answer may depend on how the v4 manifest work, which restructures per-file statistics, proceeds.
+### 13.1 Where index manifests live
 
-The registry's tier-two file could equally live outside the main repository, and there may be governance reasons to prefer that. We have not addressed blobs that span several data files, such as an index over an entire partition, which would need either a multi-valued reference or a partition-scoped binding; we left them out because their compaction semantics are considerably harder and the single-file case is the one we can currently justify.
+Section 12.3 proposes that data-file-scoped blobs be hosted as an index type under the community's index specification rather than listed in table metadata, and the shape of Section 6.3 now depends on whether that specification's authors will accept an extract whose validity is defined by liveness rather than by a snapshot. The work this would entail, from rewriting Section 6.3 around the hosted design to settling how a liveness-validated extract interacts with garbage collection, is tracked as [issue 1](https://github.com/acruise/iceberg-progressive-indexing/issues/1) in the repository that holds this draft.
 
-Configuration references raise questions of their own. We have proposed that a configuration describe how one blob was built, and left open whether it should also record why (the access statistics or policy that led an indexer to build it), which would make the store more useful for auditing at the cost of making configurations far less often shared and digests far less often equal.
+### 13.2 Index manifest as a file type or a content type
 
-We have also left the retention contract for out-of-band stores informal: a store must not discard a document while a live blob refers to it, but Iceberg has no way to tell a store that a table has stopped referring to one, and whether the specification should define that signal, or merely recommend the in-band store wherever retention matters, is a question we would like the community's view on. Finally, Section 12.3 proposes that data-file-scoped blobs be hosted as an index type under the community's index specification rather than listed in table metadata; whether that specification's authors will accept an extract whose validity is defined by liveness rather than by a snapshot is the question on which the shape of Section 6.3 now depends. Section 6.2 admits locating and aggregating blobs under declared obligations; whether a first version of the specification should admit them at all, or confine data-file scope to exclusion-only types until someone proposes a concrete type of each kind, is a question we lean toward answering conservatively. Section 7.8 borrows the catalog's term representation for input expressions without saying which transforms a planner must be able to match; confining the vocabulary to the partition transforms, which every engine already implements, would let any engine match a predicate to a blob at the cost of leaving out the string functions that make expression-valued inputs worth having, and opening it to the richer expressions of the index specification's derived columns reverses the trade.
+If the index manifest stays in table metadata, whether it should be a new file type or a new content type within the existing manifest format is the question we are least sure of, and the answer may depend on how the v4 manifest work, which restructures per-file statistics, proceeds. Hosting under the index specification (Section 13.1) would settle it, since the tracking file would take the manifest's place.
+
+### 13.3 Which format version
+
+Section 11 argues that the identifier namespace, the descriptors and the Java interfaces need no format version change, and that data-file-scoped blobs and index manifests could be gated by a table property within the current version. The index specification is targeted at format version 4, and if the hosting of Section 13.1 is adopted, the two would most naturally ship together; whether the community prefers an optional feature of the current version or a v4 feature with a clean dependency on the index specification is a question for the dev list.
+
+### 13.4 Admitting locating and aggregating blobs
+
+Section 6.2 admits locating and aggregating blobs under declared obligations. Whether a first version of the specification should admit them at all, or confine data-file scope to exclusion-only types until someone proposes a concrete type of each kind, is a question we lean toward answering conservatively.
+
+### 13.5 The expression vocabulary
+
+Section 7.8 borrows the catalog's term representation for input expressions without saying which transforms a planner must be able to match. Confining the vocabulary to the partition transforms, which every engine already implements, would let any engine match a predicate to a blob at the cost of leaving out the string functions that make expression-valued inputs worth having, and opening it to the richer expressions of the index specification's derived columns reverses the trade.
+
+### 13.6 Type promotion of referenced fields
+
+A blob records field ids, and Iceberg permits the type of a field to be promoted after the blob was written. Sections 6.2 and 7.8 oblige locating, aggregating and expression-valued types to state how they behave under promotion, but the proposal gives no default for exclusion-only types, where the answer is favorable for order-preserving presence filters and unclear for types such as hashed filters whose encoding of a value depends on its type. Whether the specification should define a default (a blob over a promoted field is not used, say) or require every descriptor to state its behavior is open.
+
+### 13.7 Encryption
+
+The index specification requires index files to be encrypted whenever the source snapshot is, and the point applies with at least equal force to a Puffin file holding an n-gram filter over a string column, from which a determined reader could recover a good deal about the column's contents. This proposal says nothing about encryption, and whether Puffin files holding data-file-scoped blobs should inherit the encryption of the data files they describe, or be governed by a table-level setting, needs an answer before any sensitive column is indexed.
+
+### 13.8 Several blobs of one type for one data file
+
+Nothing in Section 6 prevents two indexers from writing blobs of the same type for the same data file under different configurations, or the same indexer from writing a replacement without removing its predecessor. A reader can use any blob that is valid for its purpose, so correctness is unaffected, but planning cost and storage are, and the index manifest needs a rule for whether a later blob of the same type and fields supersedes an earlier one, whether the configuration digest is part of that identity, and who removes the loser.
+
+### 13.9 Blobs spanning several data files
+
+We have not addressed blobs that span several data files, such as an index over an entire partition, which would need either a multi-valued reference or a partition-scoped binding. We left them out because their compaction semantics are considerably harder and the single-file case is the one we can currently justify.
+
+### 13.10 Puffin file granularity
+
+A Puffin file may hold the blobs of one data file or of thousands, and the choice trades the number of files and requests against the amount of dead weight a Puffin file carries once some of its data files are compacted away. Section 6.4 permits a maintenance rewrite when the live fraction becomes small but gives no threshold and no guidance on batching, and the simulator accompanying this draft accounts for Puffin rewrite work separately because batching background builds makes it a cost worth measuring. Whether the specification should say anything here, or leave it to writers as it does for data file sizing, is open.
+
+### 13.11 Descriptor evolution
+
+This draft has already added two fields to the descriptor (`inference` in Section 6.2 and the `expressions` member of `input-fields` in Section 7.8), and more will follow. Descriptors are published in the registry and exposed by implementations, so the two copies can disagree, and an old implementation can expose a descriptor that lacks a field a reader has learned to consult. A rule is needed for which copy a reader trusts, for what the absence of a field means (the defaults given so far are each chosen to be the conservative reading), and for whether a change to a type's descriptor that tightens or loosens an obligation requires a new type version.
+
+### 13.12 Registry location and governance
+
+The registry's tier-two file could equally live outside the main repository, and there may be governance reasons to prefer that: a registry that accepts entries from anyone who owns a namespace sits uneasily inside a project whose other files are changed by consensus.
+
+### 13.13 Recording why a blob was built
+
+We have proposed that a configuration describe how one blob was built, and left open whether it should also record why (the access statistics or policy that led an indexer to build it), which would make the store more useful for auditing at the cost of making configurations far less often shared and digests far less often equal.
+
+### 13.14 Retention of out-of-band configurations
+
+We have left the retention contract for out-of-band stores informal: a store must not discard a document while a live blob refers to it, but Iceberg has no way to tell a store that a table has stopped referring to one. Whether the specification should define that signal, or merely recommend the in-band store wherever retention matters, is a question we would like the community's view on.
 
 ## 14. References
 
