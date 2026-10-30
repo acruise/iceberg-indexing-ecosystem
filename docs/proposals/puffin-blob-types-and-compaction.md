@@ -34,7 +34,7 @@ Nothing described here is accepted Iceberg behavior, and the identifiers, proper
     * [7.4 Reader obligations](#74-reader-obligations)
     * [7.5 Descriptor fields](#75-descriptor-fields)
     * [7.6 A worked example: character n-gram Bloom filters](#76-a-worked-example-character-n-gram-bloom-filters)
-    * [7.7 Configurations and drift](#77-configurations-and-drift)
+    * [7.7 Configurations and workload drift](#77-configurations-and-workload-drift)
     * [7.8 Expressions as inputs](#78-expressions-as-inputs)
 * [8. Compaction Semantics: Candidate Specification Text](#8-compaction-semantics-candidate-specification-text)
 * [9. Java Service-Provider Interface](#9-java-service-provider-interface)
@@ -84,7 +84,7 @@ Puffin gives Iceberg a well-specified container for statistics and indexes that 
 * a namespace for blob type identifiers with a lightweight community registry
 * a machine-readable descriptor for each blob type
 * a general notion of blobs scoped to a single data file (generalizing the binding that v3 deletion vectors already use)
-* a way for each blob to record the configuration under which it was built so that readers can resolve that configuration from an in-band or out-of-band store
+* a way for each blob to record, by content digest, the configuration under which it was built, so that readers resolve that configuration from an in-band or out-of-band store and evaluate the blob under it or not at all, never under an assumed one
 * candidate normative text for how compaction treats such blobs
 
 **On the implementation side,** we propose:
@@ -318,6 +318,16 @@ An index manifest row, and the blob it locates, become garbage once the referenc
 
 ## 7. Build Configurations
 
+This section rests on an assumption we hold deliberately and want to state before the mechanism: **the configuration under which a blob was built will drift from the configuration a reader assumes, and the drift will be silent unless the format makes it visible.** A table accumulates blobs over years. In that time the indexer that writes them changes its defaults, the library it links against updates its Unicode tables or its hash implementation, a second team deploys an indexer of its own with different settings, an engine that evaluates the blobs upgrades to a release that folds case differently, and an operator tunes a parameter without rebuilding what was already built. None of these events is an error and every one of them is routine, and after any of them the table holds blobs of one type built under more than one configuration, with nothing in the payload to say which. A reader that assumes a configuration, whether a default, the table's current setting or the one it would have chosen itself, will sometimes be wrong, and when it is wrong about an evaluation parameter the result is a file silently excluded while it holds a matching row.
+
+We therefore adopt three rules, and the rest of the section is their working out:
+
+* A configuration is identified by the digest of its content, never by a name or a version alone, so that two parties agree on a configuration only when they hold the same document.
+* A blob records the digest of the configuration it was built under, and a reader evaluates the blob under the configuration it resolves from that digest or does not evaluate it at all. No blob is ever evaluated under an assumed configuration.
+* A configuration that turns out to be wrong is revoked by digest, so that every blob built under it goes out of service with one metadata commit, without anyone having to know where those blobs are.
+
+The cost is a property on every blob and one store lookup per distinct digest, and we regard it as the cheapest insurance in this proposal.
+
 ### 7.1 Why the type identifier is not enough
 
 A blob type identifier fixes the format of a payload, but it does not fix *the parameters under which a particular payload was built*, and two blobs of the same type can differ in ways that matter to every party that touches them:
@@ -428,9 +438,9 @@ The evaluation parameters are the ones a reader must reproduce exactly when it t
 
 The composition parameters are the evaluation parameters plus the filter's size. Two filters built with the same hashing and the same size can be merged by bitwise OR, and the result is exactly the filter that would have been built from the union of their grams, which justifies `merge-precision: exact`; filters that differ in any of these cannot be merged at all. The distinction between fixed and adaptive sizing shows why the agreement rule of Section 7.5 treats an omitted key as a disagreement. A configuration that specifies `target-fpp` instead of `bits`, so that each file's filter is sized from its own distinct-gram count, gives better selectivity per file but produces filters of different sizes, and since such configurations never specify `bits`, compaction treats their blobs as non-composable and rebuilds them, which is the correct outcome without any special case. Fixed sizing has the opposite weakness: an exact merge is not necessarily a useful one, because a filter of fixed size fills as compaction concatenates files, and a writer SHOULD rebuild rather than merge when the estimated fill of the composed filter would make its false-positive rate unacceptable, a judgment it can make from the sources' bit counts without reading any data.
 
-### 7.7 Configurations and drift
+### 7.7 Configurations and workload drift
 
-The mechanism also serves the motivation of Section 2.3 more directly than it might appear. A background indexer that revisits its choices as the workload changes will, over time, change not only which files and columns it indexes but how it indexes them. The n-gram filter of Section 7.6 makes the point concretely. A column of product codes queried only by exact equality is well served by `normalization: none`, but once the workload shifts toward case-insensitive search (`ILIKE`, or predicates on `lower(sku)`) those blobs can no longer evaluate the new predicates at all, whereas a case-folded filter could have served both kinds, since a case-sensitive predicate can be answered conservatively by folding its literal.
+Configuration drift, the subject of this section's opening, is one of two kinds of drift the mechanism addresses. The other is drift in the workload, and the mechanism serves the motivation of Section 2.3 more directly than it might appear. A background indexer that revisits its choices as the workload changes will, over time, change not only which files and columns it indexes but how it indexes them. The n-gram filter of Section 7.6 makes the point concretely. A column of product codes queried only by exact equality is well served by `normalization: none`, but once the workload shifts toward case-insensitive search (`ILIKE`, or predicates on `lower(sku)`) those blobs can no longer evaluate the new predicates at all, whereas a case-folded filter could have served both kinds, since a case-sensitive predicate can be answered conservatively by folding its literal.
 
 The index exists and is valid, but it was built under the wrong configuration for the queries now arriving, which is the configuration-level counterpart of the predicate-shape mismatch that our simulations measure between index kinds and queries. Configuration references let such an indexer find the blobs built under each superseded configuration from the index manifests alone and rebuild the most valuable of them first, leaving the rest in service until it gets to them, which is the same progressive treatment this proposal gives to index construction in general.
 
