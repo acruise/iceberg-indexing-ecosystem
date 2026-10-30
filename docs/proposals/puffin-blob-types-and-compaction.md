@@ -576,7 +576,7 @@ Data-file-scoped blobs would then inherit the specification's commit protocol an
 
 ### 13.1 Where index manifests live
 
-Section 12.3 proposes that data-file-scoped blobs be hosted as an index type under the community's index specification rather than listed in table metadata, and the shape of Section 6.3 now depends on whether that specification's authors will accept an extract whose validity is defined by liveness rather than by a snapshot. The work this would entail, from rewriting Section 6.3 around the hosted design to settling how a liveness-validated extract interacts with garbage collection, is tracked as [issue 1](https://github.com/acruise/iceberg-progressive-indexing/issues/1) in the repository that holds this draft.
+Section 12.3 proposes that data-file-scoped blobs be hosted as an index type under the community's index specification rather than listed in table metadata, and the shape of Section 6.3 now depends on whether that specification's authors will accept an extract whose validity is defined by liveness rather than by a snapshot. The work this would entail, from rewriting Section 6.3 around the hosted design to settling how a liveness-validated extract interacts with garbage collection, is tracked as [issue 1](https://github.com/acruise/iceberg-indexing-ecosystem/issues/1) in the repository that holds this draft.
 
 ### 13.2 Index manifest as a file type or a content type
 

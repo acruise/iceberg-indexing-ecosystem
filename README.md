@@ -1,10 +1,10 @@
-# iceberg-progressive-indexing
+# iceberg-indexing-ecosystem
 
 This repository holds a proposal for Apache Iceberg, a Java prototype of it, and the study that motivated it.
 
 The proposal asks how a table format could host an open ecosystem of per-file indexes in Puffin files: index types that anyone can define and ship under a namespace they own, that engines discover at run time, that record the configuration they were built under, that survive compaction where their structure allows it, and that can never cause a wrong answer when an engine does not understand them.
 
-The study, which gives the repository its name, asks when and on which files and columns such indexes are worth building, and in particular whether building them late, in the background, after a process has watched the workload, beats building them with the data. We call the late strategy *progressive indexing*, and a simulator measures the trade-off.
+The study asks when and on which files and columns such indexes are worth building, and in particular whether building them late, in the background, after a process has watched the workload, beats building them with the data. We call the late strategy *progressive indexing*, and a simulator measures the trade-off.
 
 The two are kept apart on purpose. The proposal's case does not depend on any particular answer to the timing question, but the late-built index is the case that exposes every gap the proposal fills, since it needs a type nobody has standardized, a binding to a file rather than a snapshot, a record of how it was built and a rule for compaction, and it is the running example throughout.
 
