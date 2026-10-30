@@ -247,7 +247,7 @@ We propose that each blob type have a *descriptor*, a small JSON document publis
 | `deletes` | `conservative`, `approximate` or `invalidated` | How row-level deletes affect the blob's meaning; values in the second table. |
 | `inference` | `exclusion` (default), `location` or `aggregate` | What a reader may conclude from a data-file-scoped blob, as Section 6.2 defines; values in the second table. |
 | `compression` | list of codec names | The codecs writers may apply, which lets a type such as `deletion-vector-v1`, whose definition forbids compression, say so mechanically. |
-| `config` | object with `schema`, `evaluation`, `composition` | The type's build configuration contract (Section 7.5). |
+| `config` | object with `schema`, `schema-digest`, `evaluation`, `composition` | The type's build configuration contract (Section 7.5). |
 
 The enumerated values are as follows.
 
@@ -333,7 +333,7 @@ This section rests on an assumption we hold deliberately and want to state befor
 
 We therefore adopt three rules, and the rest of the section is their working out:
 
-* A configuration is identified by the digest of its content, never by a name or a version alone, so that two parties agree on a configuration only when they hold the same document.
+* A configuration is identified by the digest of its content, prefixed by the digest of the schema it conforms to, never by a name or a version alone, so that two parties agree on a configuration only when they hold the same document and read it under the same schema.
 * A blob records the digest of the configuration it was built under, and a reader evaluates the blob under the configuration it resolves from that digest or does not evaluate it at all. No blob is ever evaluated under an assumed configuration.
 * A configuration that turns out to be wrong is revoked by digest, so that every blob built under it goes out of service with one metadata commit, without anyone having to know where those blobs are.
 
@@ -366,12 +366,12 @@ We propose four reserved property keys, in the sense of Section 4.2, whose meani
 
 | Key | Presence | Value | Meaning |
 |---|---|---|---|
-| `config-digest` | Required when the type declares evaluation parameters; otherwise optional | The name of a hash algorithm, a colon, and the lower-case hexadecimal digest of the configuration document in its canonical form, for example `sha-256:9f86d0…` | The identity of the configuration. Two blobs whose digests are equal are known to have been built under the same configuration without either document being fetched. |
+| `config-digest` | Required when the type declares evaluation parameters; otherwise optional | The name of a hash algorithm, a colon, and the lower-case hexadecimal digest of the configuration document in its canonical form, prefixed by the digest of its schema as described below, for example `sha-256:9f86d0…` | The identity of the configuration. Two blobs whose digests are equal are known to have been built under the same configuration, read under the same schema, without either document being fetched. |
 | `config-id` | Optional | An identifier, which SHOULD be namespaced in the manner of Section 4.1, for example `com.example.indexing.orders-sku-bloom` | A name for the configuration, meant for people and for stores that organize configurations by name. |
 | `config-version` | Optional | An opaque version string | The version of the named configuration. |
 | `config-store` | Optional | One of the store names declared in table properties (Section 7.3) | The store from which the configuration should be resolved; the table's default store applies when absent. |
 
-Configuration documents are JSON, and the canonical form is that of the JSON Canonicalization Scheme ([RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)), so that any party holding the document can recompute the digest. When `config-id` and `config-version` are present together with `config-digest`, the digest is authoritative: a reader that resolves a configuration by identifier and version MUST verify that the document it receives has the recorded digest, and MUST treat a mismatch as a failure to resolve.
+Configuration documents are JSON, and the canonical form is that of the JSON Canonicalization Scheme ([RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)), so that any party holding the document can recompute the digest. The digest is not taken over the document alone. Its preimage is the digest of the canonical form of the type's configuration schema, as bytes, followed by the canonical form of the configuration document, so that for a type whose descriptor gives `schema-digest` *S* (Section 7.5) and a configuration *C*, `config-digest` is *H*(*S* ‖ canonical(*C*)). The reason is that a configuration document has no meaning apart from the schema it is read under, and the documents most likely to be shared across types are exactly the ones whose meanings differ most. `{}` is the valid configuration of every type with no parameters, `{"seed": 0}` is valid under any schema that has a seed, and a filter type's `{"bits": 65536}` and a sketch type's `{"bits": 65536}` describe different things. Taken over the document alone, each pair would share a digest, a configuration store keyed by digest could return a document written for another type, and a revocation by digest (Section 7.4) would revoke across type boundaries. Prefixing the schema digest separates the domains, as cryptographic protocols separate theirs with tags, at the cost of one extra hash that every party already has the input for, since the schema digest is published in the descriptor and compiled into implementations (Section 9.4). When `config-id` and `config-version` are present together with `config-digest`, the digest is authoritative: a reader that resolves a configuration by identifier and version MUST verify that the document it receives has the recorded digest, and MUST treat a mismatch as a failure to resolve.
 
 A blob whose type declares evaluation parameters MUST carry `config-digest`. A blob of any other type MAY carry it, and we expect that most blobs written by background indexers will, since provenance is cheap to record and expensive to reconstruct. The properties of a blob built under a named configuration would read as follows:
 
@@ -396,17 +396,18 @@ An out-of-band store makes two promises that Iceberg cannot enforce, and the pro
 
 ### 7.4 Reader obligations
 
-A reader that intends to use a blob for planning MUST first determine whether its type declares evaluation parameters. If it does, the reader MUST resolve the blob's configuration, verify its digest, and evaluate predicates under it; if the configuration cannot be resolved, whether because the store is unavailable or because the reader has no implementation of the named store, the reader MUST NOT use the blob, and plans as though the blob did not exist. This rule keeps the property stated in Section 1: an unavailable configuration store can cost index coverage, and it can make planning slower, but it cannot produce an incorrect result. A reader SHOULD cache resolved configurations by digest, which is safe without invalidation because a digest names exactly one document.
+A reader that intends to use a blob for planning MUST first determine whether its type declares evaluation parameters. If it does, the reader MUST resolve the blob's configuration, verify its digest, and evaluate predicates under it; if the configuration cannot be resolved, whether because the store is unavailable or because the reader has no implementation of the named store, the reader MUST NOT use the blob, and plans as though the blob did not exist. This rule keeps the property stated in Section 1: an unavailable configuration store can cost index coverage, and it can make planning slower, but it cannot produce an incorrect result. A reader SHOULD cache resolved configurations by digest, which is safe without invalidation because a digest names exactly one document under exactly one schema.
 
 We also propose a revocation mechanism, because the most likely reason to want to find all blobs built under some configuration is that the configuration, or the code that applied it, turned out to be wrong. A table property `puffin.config.revoked` lists digests, and readers MUST NOT use any blob whose `config-digest` appears in it. Revocation is a single metadata commit that takes effect for every subsequent reader without any payload being rewritten, while the revoked blobs stay in place until a background indexer replaces them at its own pace.
 
 ### 7.5 Descriptor fields
 
-The descriptor of Section 5 gains a `config` field with three members:
+The descriptor of Section 5 gains a `config` field with four members:
 
 | Member | Value | Meaning |
 |---|---|---|
 | `schema` | URL | A JSON Schema for the type's configuration documents. |
+| `schema-digest` | algorithm and lower-case hexadecimal digest, as for `config-digest` | The digest of the canonical form of the schema document at `schema`, which is the domain-separation prefix of every `config-digest` for the type (Section 7.2). A schema change therefore changes every configuration digest under the type, which is the intended effect, since the same document may mean something different under the new schema. |
 | `evaluation` | list of configuration keys | The keys readers need in order to evaluate predicates; empty for a type whose payloads are self-describing. A non-empty list is the case in which Section 7.2 makes `config-digest` mandatory. |
 | `composition` | list of configuration keys, or the single value `digest` | The keys that must agree for two blobs to be merged; `digest` when nothing short of identical configurations will do. |
 
@@ -584,7 +585,7 @@ We therefore recommend, and would make normative in specification text, that a c
 
 * It MUST match the full identifier of Section 4.1, major version included, and MUST treat any other major version of the same name as an unknown type. A binary built against `com.example.ngram-bloom-v1` ignores `com.example.ngram-bloom-v2` blobs, however similar the payloads may be.
 * It MUST carry the descriptor it was built against, so that the obligations it was compiled to honor are inspectable from the binary and comparable with the registry's current descriptor for the type.
-* It MUST know the configuration schema it was built against, identified by the descriptor's `config.schema`, and MUST NOT use a blob whose resolved configuration contains an evaluation or composition key it does not implement. A configuration document is exact, by construction of its digest, so the comparison is a set difference over keys rather than a guess at compatibility.
+* It MUST know the configuration schema it was built against, identified by the descriptor's `config.schema` and `config.schema-digest`, and MUST NOT use a blob whose resolved configuration contains an evaluation or composition key it does not implement. A configuration document is exact, by construction of its digest, so the comparison is a set difference over keys rather than a guess at compatibility.
 * It MUST NOT attempt best-effort handling of a payload, descriptor or configuration it does not fully understand. Declining is always correct (Section 6.2); guessing is the one thing the format cannot make safe.
 
 These are the same rules the Java library applies, stated for a setting in which the implementation cannot be updated independently of the engine that embeds it. They make the consequence of lagging behind a type's evolution a loss of coverage rather than an incorrect result, which is the only consequence this proposal accepts, and they make upgrading a matter of rebuilding against a newer descriptor and schema rather than of auditing behavior.
