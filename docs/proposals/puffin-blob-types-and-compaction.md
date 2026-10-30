@@ -9,6 +9,72 @@
 
 Nothing described here is accepted Iceberg behavior, and the identifiers, property keys and class names below are placeholders chosen to make the discussion concrete.
 
+**Contents**
+
+* [1. Summary](#1-summary)
+* [2. Motivation](#2-motivation)
+    * [2.1 Puffin today](#21-puffin-today)
+    * [2.2 Compaction and out-of-band metadata](#22-compaction-and-out-of-band-metadata)
+    * [2.3 Why this matters now](#23-why-this-matters-now)
+* [3. Goals and Non-Goals](#3-goals-and-non-goals)
+* [4. Blob Type Identifiers and the Registry](#4-blob-type-identifiers-and-the-registry)
+    * [4.1 Identifier syntax](#41-identifier-syntax)
+    * [4.2 Property keys](#42-property-keys)
+    * [4.3 A two-tier registry](#43-a-two-tier-registry)
+* [5. Blob Type Descriptors](#5-blob-type-descriptors)
+* [6. Data-File-Scoped Blobs](#6-data-file-scoped-blobs)
+    * [6.1 Binding](#61-binding)
+    * [6.2 What a data-file-scoped blob may assert](#62-what-a-data-file-scoped-blob-may-assert)
+    * [6.3 Locating blobs](#63-locating-blobs)
+    * [6.4 Garbage collection](#64-garbage-collection)
+* [7. Build Configurations](#7-build-configurations)
+    * [7.1 Why the type identifier is not enough](#71-why-the-type-identifier-is-not-enough)
+    * [7.2 Configuration references](#72-configuration-references)
+    * [7.3 Configuration stores](#73-configuration-stores)
+    * [7.4 Reader obligations](#74-reader-obligations)
+    * [7.5 Descriptor fields](#75-descriptor-fields)
+    * [7.6 A worked example: character n-gram Bloom filters](#76-a-worked-example-character-n-gram-bloom-filters)
+    * [7.7 Configurations and drift](#77-configurations-and-drift)
+    * [7.8 Expressions as inputs](#78-expressions-as-inputs)
+* [8. Compaction Semantics: Candidate Specification Text](#8-compaction-semantics-candidate-specification-text)
+* [9. Java Service-Provider Interface](#9-java-service-provider-interface)
+    * [9.1 Interfaces](#91-interfaces)
+    * [9.2 Behavior](#92-behavior)
+    * [9.3 Why ServiceLoader, and its limits](#93-why-serviceloader-and-its-limits)
+    * [9.4 Prototype](#94-prototype)
+* [10. Related Requests: Workload Telemetry](#10-related-requests-workload-telemetry)
+* [11. Compatibility](#11-compatibility)
+* [12. Related Work: the Iceberg Index Specification](#12-related-work-the-iceberg-index-specification)
+    * [12.1 What the index specification defines](#121-what-the-index-specification-defines)
+    * [12.2 Positive and negative indexes](#122-positive-and-negative-indexes)
+    * [12.3 Points of contact](#123-points-of-contact)
+* [13. Related Work Outside Iceberg](#13-related-work-outside-iceberg)
+    * [13.1 Apache Paimon's file index](#131-apache-paimon's-file-index)
+    * [13.2 Apache Pinot's index service-provider interface](#132-apache-pinot's-index-service-provider-interface)
+    * [13.3 Apache Lucene codecs](#133-apache-lucene-codecs)
+    * [13.4 ClickHouse data skipping indexes](#134-clickhouse-data-skipping-indexes)
+    * [13.5 Apache Hudi's metadata table and expression indexes](#135-apache-hudi's-metadata-table-and-expression-indexes)
+    * [13.6 PostgreSQL block range indexes](#136-postgresql-block-range-indexes)
+    * [13.7 Lance](#137-lance)
+    * [13.8 Delta Lake Bloom filter indexes](#138-delta-lake-bloom-filter-indexes)
+    * [13.9 Managed warehouses](#139-managed-warehouses)
+* [14. Open Questions](#14-open-questions)
+    * [14.1 Where index manifests live](#141-where-index-manifests-live)
+    * [14.2 Index manifest as a file type or a content type](#142-index-manifest-as-a-file-type-or-a-content-type)
+    * [14.3 Which format version](#143-which-format-version)
+    * [14.4 Admitting locating and aggregating blobs](#144-admitting-locating-and-aggregating-blobs)
+    * [14.5 The expression vocabulary](#145-the-expression-vocabulary)
+    * [14.6 Type promotion of referenced fields](#146-type-promotion-of-referenced-fields)
+    * [14.7 Encryption](#147-encryption)
+    * [14.8 Several blobs of one type for one data file](#148-several-blobs-of-one-type-for-one-data-file)
+    * [14.9 Blobs spanning several data files](#149-blobs-spanning-several-data-files)
+    * [14.10 Puffin file granularity](#1410-puffin-file-granularity)
+    * [14.11 Descriptor evolution](#1411-descriptor-evolution)
+    * [14.12 Registry location and governance](#1412-registry-location-and-governance)
+    * [14.13 Recording why a blob was built](#1413-recording-why-a-blob-was-built)
+    * [14.14 Retention of out-of-band configurations](#1414-retention-of-out-of-band-configurations)
+* [15. References](#15-references)
+
 ## 1. Summary
 
 Puffin gives Iceberg a well-specified container for statistics and indexes that live outside data files, but the specification treats a blob as little more than a type string and a byte range, and it says nothing about what should happen to a blob when the data it describes is rewritten by compaction. We propose to close both gaps:
@@ -562,7 +628,7 @@ The generality of the index metadata and extract layers suggests the remedy: a s
 * Its extract is not pinned to a snapshot but declares its validity by the liveness of the data files it references.
 * Its tracking file is the index manifest of Section 6.3, listing Puffin files and the data files their blobs describe in place of region files.
 
-Data-file-scoped blobs would then inherit the specification's commit protocol and catalog discovery without any change to table metadata, and the question raised in Section 13.2, whether the index manifest should be a new file type, would be settled. The cost is a second validity mode for extracts, and the suggestion has not yet been put to the specification's authors.
+Data-file-scoped blobs would then inherit the specification's commit protocol and catalog discovery without any change to table metadata, and the question raised in Section 14.2, whether the index manifest should be a new file type, would be settled. The cost is a second validity mode for extracts, and the suggestion has not yet been put to the specification's authors.
 
 **Gaps this proposal should close.** Two features of the index specification have no counterpart here and should, and a third has one here only because we borrowed it.
 
@@ -572,65 +638,121 @@ Data-file-scoped blobs would then inherit the specification's commit protocol an
 
 **Vector indexes.** If Puffin comes to hold the auxiliary structures of vector indexes, as Section 12.1 notes the project anticipates, those blobs will need type identifiers and a stated compaction behavior exactly as the filters of this proposal do, and we would hope to see the mechanisms of Sections 4 through 8 serve them.
 
-## 13. Open Questions
+## 13. Related Work Outside Iceberg
 
-### 13.1 Where index manifests live
+Several systems have built one or more of the mechanisms this proposal asks for, and the summaries below are organized by which mechanism each is precedent for: per-file indexes under string-named, pluggable types; skip indexes materialized after the data was written; indexes over expressions; indexes built in the background with partial coverage; and the interaction of indexes with compaction. Each entry is drawn from the project's own documentation or source as of October 2026.
+
+### 13.1 Apache Paimon's file index
+
+[Paimon](https://paimon.apache.org/docs/master/concepts/spec/fileindex) is the closest existing analogue to Section 6. Each data file may have a file index holding several index types over several columns, stored in a sidecar file beside the data file, or embedded in the manifest when small. The container begins with a magic number and a format version, and the current V2 layout, which must not be written until a table's readers have been upgraded, is selected by a table option. Index types are identified by strings (`bloom-filter`, `bitmap`, `range-bitmap`, and a deprecated bit-slice index), each configured per column through options such as the Bloom filter's expected item count and false positive probability, and the bitmap payload itself has a V1 and a V2 selectable per column. A reader that meets an index type it does not know fails by default, and an option, `file-index.read.ignore-unknown-type`, makes it skip the index with a warning instead, so that unknown indexes filter nothing.
+
+Paimon has thus met the versioning, configuration and unknown-type problems of Sections 4, 5 and 7 and answered each with a table option rather than with anything carried by the index. The difference from this proposal is where the knowledge lives: a Paimon reader must be configured to tolerate a type, where a descriptor would tell it that tolerance is always safe, and the Bloom filter's parameters are table configuration that must match what the writer used, where a configuration reference would let the reader check. Its documentation does not say what compaction does to file indexes, though the per-file layout implies they are rebuilt with the file.
+
+### 13.2 Apache Pinot's index service-provider interface
+
+[Pinot](https://docs.pinot.apache.org/indexing) stores its indexes per immutable segment and, since its index SPI refactoring, defines each index kind as an implementation of an `IndexType` interface in the `pinot-segment-spi` module, discovered through `ServiceLoader` by way of an `IndexPlugin`. The interface's documentation requires the type's id to remain constant across Pinot versions, because it keys the type's registration, its on-disk metadata and its configuration in the table schema, which is the same stability requirement Section 4.1 places on an identifier and the reason it carries a version. Each type supplies its configuration class, a creator, a reader factory and the file extensions it owns, and declares an index build lifecycle that defaults to segment creation but need not be, since Pinot's reload operation adds a newly configured index to existing segments on the servers that hold them, without rewriting the segment and without interrupting queries.
+
+That reload is after-the-fact indexing in a production system, and the SPI is the shape Section 9 proposes, with two differences. Pinot's segments are not compacted, so its types declare nothing about merging, and its index configuration is table-wide, so a segment's index is assumed to match the current configuration rather than recording the one it was built under.
+
+### 13.3 Apache Lucene codecs
+
+[Lucene](https://lucene.apache.org/core/9_12_2/core/org/apache/lucene/codecs/Codec.html) is the oldest precedent for Section 9's discovery mechanism and for Section 4's naming rules. A codec, which defines the on-disk format of a segment's postings, doc values, stored fields and the rest, has a name that is written into the index and resolved at read time by `Codec.forName` through Java's SPI, so a custom codec must be registered in `META-INF/services` and have a no-argument constructor. Names are constrained to ASCII alphanumerics of fewer than 128 characters, and new codecs may be added to a running process but never removed or replaced. Formats are versioned by name (`Lucene99`, `Lucene912`), and a backward-codecs module keeps old names readable so that an index written by one release can be read, and then rewritten on merge, by a later one.
+
+Lucene also offers the longest-running example of index structures that live and die with immutable segments and are rebuilt when segments merge. Its merge policies decide which segments to combine on the basis of size and deletion ratio, and every per-segment structure is recomputed for the merged segment under the current codec. The proposal's `rebuild` mode (Section 8) is this behavior, and its `merge` mode is the optimization Lucene declines to attempt.
+
+### 13.4 ClickHouse data skipping indexes
+
+[ClickHouse](https://clickhouse.com/docs/optimize/skipping-indexes) attaches *data skipping indexes* to a MergeTree table: `minmax`, `set`, `bloom_filter`, the n-gram and token Bloom filters `ngrambf_v1` and `tokenbf_v1`, and more recently `text` and `vector_similarity` indexes. Each is declared over an expression, with a granularity in units of the table's index granule, and stored as two files in each data part's directory. The indexes are exclusion-only, which is to say negative in the sense of Section 12.2, and a part that lacks one is simply scanned. An index added to an existing table covers only newly inserted parts until `ALTER TABLE … MATERIALIZE INDEX` builds it for the existing ones, and since version 25.1 a setting that defaults to on, `materialize_skip_indexes_on_merge`, has merges build the skip indexes of the parts they produce, with a companion setting to exclude named indexes from that rebuild.
+
+Three details bear on this proposal. The type names carry a version suffix of exactly the form Section 4.1 proposes, and the two Bloom filter variants so named are now deprecated for full-text use in favor of the text index, which shows a type lifecycle running its course. Indexes are defined over expressions as a matter of course, the case Section 7.8 adds. And the merge setting is the compaction obligation of Section 8 as a system-wide default, where this proposal has each type declare it.
+
+### 13.5 Apache Hudi's metadata table and expression indexes
+
+[Hudi](https://hudi.apache.org/docs/1.2.0/metadata_indexing) keeps its indexes as partitions of a *metadata table*, itself a Hudi table maintained alongside the data: a files index, column statistics, Bloom filters, partition statistics, a record-level index, a secondary index and, since the 1.0 line, *expression indexes*. An expression index is created with `CREATE INDEX … USING column_stats(ts) OPTIONS(expr='from_unixtime', …)` or `USING bloom_filters(rider) OPTIONS(expr='lower')`, and the documentation says plainly that the index is created on the transformed column, which is the planner-visible transform Section 7.8 proposes to record in a reserved property. Indexes may be built for existing data by an asynchronous indexer that schedules an indexing instant under a lock and executes it in coordination with the metadata table's own locking, so that, in the documentation's words, a table can be indexed without blocking writing.
+
+Hudi has therefore built both late indexing and expression-valued inputs. What it has not done, and what distinguishes the two designs, is make the set of index types open or bind an index to a data file's identity: the metadata table's partitions are fixed by Hudi's code, and an index entry is keyed by file within the metadata table rather than carried with the file, so the question of what a rewrite owes an index is answered by Hudi's own table services rather than by anything a type declares.
+
+### 13.6 PostgreSQL block range indexes
+
+[BRIN](https://www.postgresql.org/docs/current/brin.html), the block range index, is the conceptual ancestor of every per-file filter in this proposal. For each range of physically adjacent pages it stores a summary, by default the minimum and maximum of the indexed column, and a query returns every tuple in every range whose summary is consistent with the predicate, leaving the executor to recheck them; the documentation calls the index lossy, which is Section 6.2's exclusion-only in different words. Ranges that are never summarized are not wrong, only unhelpful, and the documentation states that new ranges remain unsummarized until a summarization run is invoked. Originally only `VACUUM` performed that run. An `autosummarize` index option, off by default, later arranged for autovacuum to summarize filled ranges in the background, and `brin_summarize_new_values` and `brin_summarize_range` let an operator do so by hand.
+
+The parallel extends to extensibility. What a BRIN summary contains and which predicates it can satisfy are determined by an *operator class*, which must provide four methods: one describing the summary, one testing consistency with a predicate, one adding a value to a summary, and one, `unionTuples`, merging two summaries into one. New operator classes can be declared through catalog entries alone. That interface is Section 9's `PuffinBlobType` and `MergeablePuffinBlobType` for a single-node database, with the union method playing the role of the proposal's `merge` mode, and the `pages_per_range` parameter is a build configuration in the sense of Section 7, fixed per index rather than recorded per summary.
+
+### 13.7 Lance
+
+[Lance](https://lance.org/guide/performance/) is the format that has most directly confronted the compaction problem of Section 2.2, and from the side this proposal avoids: its indexes are positive. Scalar indexes (a B-tree and a bitmap index), full-text indexes and vector indexes (IVF with product, scalar or residual quantization, and HNSW variants) are stored outside the data fragments and keyed by row address, so a compaction that rewrites fragments invalidates every address the index holds. By default compaction remaps each index to the new addresses. A *fragment reuse index* defers that work by recording the mapping from old fragment addresses to new ones, to be applied when the index is next rebuilt, and the documentation notes that compaction and index building conflict because both modify the same indexes and that indexed fragments cannot be compacted together with unindexed ones. A change merged in mid 2026 has compaction drop rewritten fragments from an address-keyed index's coverage, so that those fragments fall back to a scan rather than being served by stale addresses.
+
+Lance is the cost side of Section 12.2 made concrete: a positive index that must be kept consistent with the data's physical addresses pays for every rewrite, and the engineering around it is a sequence of ways to defer or bound that payment. It also demonstrates that partial coverage is workable for a positive index, provided the planner knows which fragments are covered, which is the role an extract's snapshot plays in the Iceberg index specification and the role liveness plays here.
+
+### 13.8 Delta Lake Bloom filter indexes
+
+Delta Lake, as implemented by Databricks, offered a [Bloom filter index](https://docs.databricks.com/aws/en/optimizations/bloom-filters) consisting of a data skipping index for each data file, written alongside the data into a `_delta_index` directory and consulted before a file is read; a file was opened only if its index indicated that it might match the filter. The feature is now deprecated. The documentation says it adds write overhead, is difficult to tune, and is superseded by predictive input/output and by liquid clustering, and recommends dropping existing indexes and vacuuming the index files away.
+
+The design is per-file and exclusion-only, as this proposal's blobs are, so its failure deserves attention. The index was chosen and sized by the writer at write time, for columns declared in advance, with parameters (false positive rate and expected item count) that the operator had to guess, and it was rebuilt whenever a file was rewritten. That is the write-time, writer-chosen filter that Section 2.3 argues against, and the documented reasons for its deprecation, the cost imposed on every write and the difficulty of choosing parameters without knowing the workload, are the costs that building late under a recorded configuration is meant to avoid.
+
+### 13.9 Managed warehouses
+
+Two proprietary systems have made background index construction with partial coverage a product behavior. [BigQuery](https://docs.cloud.google.com/bigquery/docs/search-index) builds and refreshes search indexes asynchronously, exposes the fraction of a table covered as `coverage_percentage`, and states that queries using the index return correct results even when some data is not yet indexed, with a revised index replacing the old one only once it is sufficiently populated. [Snowflake's](https://www.snowflake.com/en/blog/accelerating-point-lookups-and-analytical-queries) search optimization service maintains per-micro-partition search access paths in background warehouses, with per-column opt-in and a cost estimation function so that operators can confine it to the columns that are queried. Neither publishes its index formats, so neither is a precedent for the specification side of this proposal, but both are evidence that the operating model Section 2.3 describes, an index built behind the data and consulted wherever it happens to exist, is one that users accept and pay for.
+
+## 14. Open Questions
+
+### 14.1 Where index manifests live
 
 Section 12.3 proposes that data-file-scoped blobs be hosted as an index type under the community's index specification rather than listed in table metadata, and the shape of Section 6.3 now depends on whether that specification's authors will accept an extract whose validity is defined by liveness rather than by a snapshot. The work this would entail, from rewriting Section 6.3 around the hosted design to settling how a liveness-validated extract interacts with garbage collection, is tracked as [issue 1](https://github.com/acruise/iceberg-indexing-ecosystem/issues/1) in the repository that holds this draft.
 
-### 13.2 Index manifest as a file type or a content type
+### 14.2 Index manifest as a file type or a content type
 
-If the index manifest stays in table metadata, whether it should be a new file type or a new content type within the existing manifest format is the question we are least sure of, and the answer may depend on how the v4 manifest work, which restructures per-file statistics, proceeds. Hosting under the index specification (Section 13.1) would settle it, since the tracking file would take the manifest's place.
+If the index manifest stays in table metadata, whether it should be a new file type or a new content type within the existing manifest format is the question we are least sure of, and the answer may depend on how the v4 manifest work, which restructures per-file statistics, proceeds. Hosting under the index specification (Section 14.1) would settle it, since the tracking file would take the manifest's place.
 
-### 13.3 Which format version
+### 14.3 Which format version
 
-Section 11 argues that the identifier namespace, the descriptors and the Java interfaces need no format version change, and that data-file-scoped blobs and index manifests could be gated by a table property within the current version. The index specification is targeted at format version 4, and if the hosting of Section 13.1 is adopted, the two would most naturally ship together; whether the community prefers an optional feature of the current version or a v4 feature with a clean dependency on the index specification is a question for the dev list.
+Section 11 argues that the identifier namespace, the descriptors and the Java interfaces need no format version change, and that data-file-scoped blobs and index manifests could be gated by a table property within the current version. The index specification is targeted at format version 4, and if the hosting of Section 14.1 is adopted, the two would most naturally ship together; whether the community prefers an optional feature of the current version or a v4 feature with a clean dependency on the index specification is a question for the dev list.
 
-### 13.4 Admitting locating and aggregating blobs
+### 14.4 Admitting locating and aggregating blobs
 
 Section 6.2 admits locating and aggregating blobs under declared obligations. Whether a first version of the specification should admit them at all, or confine data-file scope to exclusion-only types until someone proposes a concrete type of each kind, is a question we lean toward answering conservatively.
 
-### 13.5 The expression vocabulary
+### 14.5 The expression vocabulary
 
 Section 7.8 borrows the catalog's term representation for input expressions without saying which transforms a planner must be able to match. Confining the vocabulary to the partition transforms, which every engine already implements, would let any engine match a predicate to a blob at the cost of leaving out the string functions that make expression-valued inputs worth having, and opening it to the richer expressions of the index specification's derived columns reverses the trade.
 
-### 13.6 Type promotion of referenced fields
+### 14.6 Type promotion of referenced fields
 
 A blob records field ids, and Iceberg permits the type of a field to be promoted after the blob was written. Sections 6.2 and 7.8 oblige locating, aggregating and expression-valued types to state how they behave under promotion, but the proposal gives no default for exclusion-only types, where the answer is favorable for order-preserving presence filters and unclear for types such as hashed filters whose encoding of a value depends on its type. Whether the specification should define a default (a blob over a promoted field is not used, say) or require every descriptor to state its behavior is open.
 
-### 13.7 Encryption
+### 14.7 Encryption
 
 The index specification requires index files to be encrypted whenever the source snapshot is, and the point applies with at least equal force to a Puffin file holding an n-gram filter over a string column, from which a determined reader could recover a good deal about the column's contents. This proposal says nothing about encryption, and whether Puffin files holding data-file-scoped blobs should inherit the encryption of the data files they describe, or be governed by a table-level setting, needs an answer before any sensitive column is indexed.
 
-### 13.8 Several blobs of one type for one data file
+### 14.8 Several blobs of one type for one data file
 
 Nothing in Section 6 prevents two indexers from writing blobs of the same type for the same data file under different configurations, or the same indexer from writing a replacement without removing its predecessor. A reader can use any blob that is valid for its purpose, so correctness is unaffected, but planning cost and storage are, and the index manifest needs a rule for whether a later blob of the same type and fields supersedes an earlier one, whether the configuration digest is part of that identity, and who removes the loser.
 
-### 13.9 Blobs spanning several data files
+### 14.9 Blobs spanning several data files
 
 We have not addressed blobs that span several data files, such as an index over an entire partition, which would need either a multi-valued reference or a partition-scoped binding. We left them out because their compaction semantics are considerably harder and the single-file case is the one we can currently justify.
 
-### 13.10 Puffin file granularity
+### 14.10 Puffin file granularity
 
 A Puffin file may hold the blobs of one data file or of thousands, and the choice trades the number of files and requests against the amount of dead weight a Puffin file carries once some of its data files are compacted away. Section 6.4 permits a maintenance rewrite when the live fraction becomes small but gives no threshold and no guidance on batching, and the simulator accompanying this draft accounts for Puffin rewrite work separately because batching background builds makes it a cost worth measuring. Whether the specification should say anything here, or leave it to writers as it does for data file sizing, is open.
 
-### 13.11 Descriptor evolution
+### 14.11 Descriptor evolution
 
 This draft has already added two fields to the descriptor (`inference` in Section 6.2 and the `expressions` member of `input-fields` in Section 7.8), and more will follow. Descriptors are published in the registry and exposed by implementations, so the two copies can disagree, and an old implementation can expose a descriptor that lacks a field a reader has learned to consult. A rule is needed for which copy a reader trusts, for what the absence of a field means (the defaults given so far are each chosen to be the conservative reading), and for whether a change to a type's descriptor that tightens or loosens an obligation requires a new type version.
 
-### 13.12 Registry location and governance
+### 14.12 Registry location and governance
 
 The registry's tier-two file could equally live outside the main repository, and there may be governance reasons to prefer that: a registry that accepts entries from anyone who owns a namespace sits uneasily inside a project whose other files are changed by consensus.
 
-### 13.13 Recording why a blob was built
+### 14.13 Recording why a blob was built
 
 We have proposed that a configuration describe how one blob was built, and left open whether it should also record why (the access statistics or policy that led an indexer to build it), which would make the store more useful for auditing at the cost of making configurations far less often shared and digests far less often equal.
 
-### 13.14 Retention of out-of-band configurations
+### 14.14 Retention of out-of-band configurations
 
 We have left the retention contract for out-of-band stores informal: a store must not discard a document while a live blob refers to it, but Iceberg has no way to tell a store that a table has stopped referring to one. Whether the specification should define that signal, or merely recommend the in-band store wherever retention matters, is a question we would like the community's view on.
 
-## 14. References
+## 15. References
 
 Apache Iceberg, [*Puffin file format specification*](https://iceberg.apache.org/puffin-spec/).
 
@@ -645,6 +767,24 @@ H. Gao and P. Váry, [*OpenAPI: Add index endpoints and key-lookup index to REST
 Manish M. (osscm), [*Core, Spark: SCALAR Key Lookup Index, reference implementation of #16961*](https://github.com/apache/iceberg/pull/18187), apache/iceberg pull request 18187.
 
 Apache Iceberg 1.12.0 source distribution, classes `org.apache.iceberg.puffin.StandardBlobTypes`, `PuffinFormat`, `PuffinWriter`, `PuffinReader`, `org.apache.iceberg.deletes.BaseDVFileWriter`, `org.apache.iceberg.StatisticsFile`, `BaseRewriteFiles`, `MergingSnapshotProducer` and `FileCleanupStrategy`, as published to Maven Central.
+
+Apache Paimon, [*File index*](https://paimon.apache.org/docs/master/concepts/spec/fileindex), specification page.
+
+Apache Pinot, [*Indexing*](https://docs.pinot.apache.org/indexing), and the `org.apache.pinot.segment.spi.index.IndexType` interface in the `pinot-segment-spi` module of the apache/pinot repository.
+
+Apache Lucene, [`org.apache.lucene.codecs.Codec`](https://lucene.apache.org/core/9_12_2/core/org/apache/lucene/codecs/Codec.html), Lucene 9.12 API documentation.
+
+ClickHouse, [*Understanding ClickHouse data skipping indexes*](https://clickhouse.com/docs/optimize/skipping-indexes), and the [`materialize_skip_indexes_on_merge`](https://clickhouse.com/docs/reference/settings/merge-tree-settings/materialize) MergeTree setting.
+
+Apache Hudi, [*Metadata indexing*](https://hudi.apache.org/docs/1.2.0/metadata_indexing), version 1.2.0 documentation.
+
+PostgreSQL Global Development Group, [*BRIN indexes*](https://www.postgresql.org/docs/current/brin.html), PostgreSQL documentation, chapter 67.
+
+Lance, [*Performance guide*](https://lance.org/guide/performance/), and lance-format/lance [pull request 8084](https://github.com/lance-format/lance/pull/8084).
+
+Databricks, [*Bloom filter indexes*](https://docs.databricks.com/aws/en/optimizations/bloom-filters).
+
+Google Cloud, [*Manage search indexes*](https://docs.cloud.google.com/bigquery/docs/search-index), BigQuery documentation.
 
 Apache Arrow, [*Canonical extension types*](https://arrow.apache.org/docs/format/CanonicalExtensions.html).
 
