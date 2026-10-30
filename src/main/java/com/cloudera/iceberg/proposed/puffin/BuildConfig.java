@@ -3,82 +3,96 @@ package com.cloudera.iceberg.proposed.puffin;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalLong;
-import java.util.regex.Pattern;
 
 /**
- * The configuration under which a blob was built (Section 7): a JSON object identified by the SHA-256 digest of its
- * RFC 8785 canonical form, so that two parties holding the same document agree on its identity without coordination.
+ * The configuration under which a blob was built (Section 7): a {@link ConfigDocument} read under one blob type's
+ * configuration schema, identified by the digest of Section 7.2,
  *
- * <p>Immutable. Equality is equality of digests, and therefore of canonical forms.
+ * <pre>  config-digest = SHA-256( schema-digest bytes || canonical(document) )</pre>
+ *
+ * so that two parties holding the same document and the same schema agree on its identity without coordination, and so
+ * that the same document read under two schemas, {@code {}} for every parameterless type or {@code {"seed": 0}} for
+ * every type with a seed, has two identities rather than one. A store keyed by the digest therefore cannot return a
+ * document written for another type, and a revocation by digest (Section 7.4) cannot cross a type boundary.
+ *
+ * <p>Immutable. Equality is equality of digests, and therefore of schema and canonical form together.
  */
 public final class BuildConfig {
-  public static final String DIGEST_ALGORITHM = "sha-256";
-  private static final Pattern DIGEST_SYNTAX = Pattern.compile("sha-256:[0-9a-f]{64}");
+  public static final String DIGEST_ALGORITHM = Digests.ALGORITHM;
 
-  private final JsonNode document;
-  private final String canonical;
+  private final ConfigDocument document;
+  private final SchemaDigest schema;
   private final String digest;
 
-  private BuildConfig(JsonNode document) {
-    if (!document.isObject()) {
-      throw new IllegalArgumentException("a build configuration must be a JSON object");
-    }
-    this.document = document.deepCopy();
-    this.canonical = CanonicalJson.write(this.document);
-    this.digest = digestOf(canonical);
+  private BuildConfig(ConfigDocument document, SchemaDigest schema) {
+    this.document = Objects.requireNonNull(document, "document");
+    this.schema = Objects.requireNonNull(schema, "schema");
+    this.digest = Digests.format(Digests.sha256(schema.rawBytes(), document.canonicalBytes()));
+  }
+
+  static BuildConfig of(ConfigDocument document, SchemaDigest schema) {
+    return new BuildConfig(document, schema);
   }
 
   /**
    * @throws IllegalArgumentException if {@code json} is not a single JSON object, has duplicate member names, or holds
    *     a value that RFC 8785 cannot canonicalize exactly
    */
-  public static BuildConfig parse(String json) {
-    return new BuildConfig(CanonicalJson.parse(json));
+  public static BuildConfig parse(String json, SchemaDigest schema) {
+    return new BuildConfig(ConfigDocument.parse(json), schema);
   }
 
-  public static Builder builder() {
-    return new Builder();
+  public static Builder builder(SchemaDigest schema) {
+    return new Builder(schema);
   }
 
   public static boolean isDigest(String s) {
-    return s != null && DIGEST_SYNTAX.matcher(s).matches();
+    return Digests.isDigest(s);
   }
 
+  /** The {@code config-digest} of Section 7.2. */
   public String digest() {
     return digest;
   }
 
+  /** The digest of the schema this document was read under, the descriptor's {@code schema-digest}. */
+  public SchemaDigest schemaDigest() {
+    return schema;
+  }
+
+  public ConfigDocument document() {
+    return document;
+  }
+
   public String canonicalJson() {
-    return canonical;
+    return document.canonicalJson();
   }
 
   public byte[] canonicalBytes() {
-    return canonical.getBytes(StandardCharsets.UTF_8);
+    return document.canonicalBytes();
   }
 
   public boolean has(String key) {
-    return document.has(key);
+    return document.member(key) != null;
   }
 
   /** A copy of the member's value, or empty if absent. */
   public Optional<JsonNode> get(String key) {
-    return Optional.ofNullable(document.get(key)).map(JsonNode::deepCopy);
+    return Optional.ofNullable(document.member(key)).map(JsonNode::deepCopy);
   }
 
   public Optional<String> string(String key) {
-    JsonNode v = document.get(key);
+    JsonNode v = document.member(key);
     return v != null && v.isTextual() ? Optional.of(v.textValue()) : Optional.empty();
   }
 
   /** The member as an integer, if it is a number with no fractional part. */
   public OptionalLong integer(String key) {
-    JsonNode v = document.get(key);
+    JsonNode v = document.member(key);
     if (v == null || !v.isNumber()) {
       return OptionalLong.empty();
     }
@@ -87,17 +101,21 @@ public final class BuildConfig {
   }
 
   public OptionalDouble number(String key) {
-    JsonNode v = document.get(key);
+    JsonNode v = document.member(key);
     return v != null && v.isNumber() ? OptionalDouble.of(v.doubleValue()) : OptionalDouble.empty();
   }
 
   /**
    * Whether both configurations specify {@code key} with canonically equal values. A key that either omits is a
-   * disagreement, not vacuous agreement (Section 7.5).
+   * disagreement, not vacuous agreement (Section 7.5). Configurations under different schemas never agree, since the
+   * same key may mean different things under each.
    */
   public boolean agreesOn(BuildConfig other, String key) {
-    JsonNode a = document.get(key);
-    JsonNode b = other.document.get(key);
+    if (!schema.equals(other.schema)) {
+      return false;
+    }
+    JsonNode a = document.member(key);
+    JsonNode b = other.document.member(key);
     return a != null && b != null && CanonicalJson.write(a).equals(CanonicalJson.write(b));
   }
 
@@ -113,22 +131,16 @@ public final class BuildConfig {
 
   @Override
   public String toString() {
-    return canonical;
-  }
-
-  private static String digestOf(String canonical) {
-    try {
-      byte[] hash = MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8));
-      return DIGEST_ALGORITHM + ":" + java.util.HexFormat.of().formatHex(hash);
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("every Java platform must support SHA-256", e);
-    }
+    return document.canonicalJson();
   }
 
   public static final class Builder {
+    private final SchemaDigest schema;
     private final ObjectNode node = JsonNodeFactory.instance.objectNode();
 
-    private Builder() {}
+    private Builder(SchemaDigest schema) {
+      this.schema = Objects.requireNonNull(schema, "schema");
+    }
 
     public Builder put(String key, String value) {
       node.put(key, value);
@@ -159,7 +171,7 @@ public final class BuildConfig {
      * @throws IllegalArgumentException if a value cannot be canonicalized exactly
      */
     public BuildConfig build() {
-      return new BuildConfig(node);
+      return new BuildConfig(ConfigDocument.of(node), schema);
     }
   }
 }

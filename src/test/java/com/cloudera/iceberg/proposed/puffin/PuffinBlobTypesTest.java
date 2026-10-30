@@ -97,13 +97,45 @@ class PuffinBlobTypesTest {
           "compression": ["none", "zstd"],
           "config": {
             "schema": "https://example.com/specs/ngram-bloom-v1/config.schema.json",
+            "schema-digest": "sha-256:c0ffee1a9b8c7d6e5f40312233445566778899aabbccddeeff00112233445566",
             "evaluation": ["normalization", "unicode-version", "gram-length", "hash", "seed", "hash-count"],
             "composition": ["normalization", "unicode-version", "gram-length", "hash", "seed", "hash-count", "bits"]
           }
         }
         """;
+    // The proposal's schema-digest is a placeholder; the implementation's is the digest of the schema it ships.
+    String expected = proposal.replace("sha-256:c0ffee1a9b8c7d6e5f40312233445566778899aabbccddeeff00112233445566", NgramBloomConfig.SCHEMA_DIGEST.toString());
     String actual = new NgramBloomBlobType().descriptor().toJson().toString();
-    assertThat(BuildConfig.parse(actual)).isEqualTo(BuildConfig.parse(proposal));
+    assertThat(ConfigDocument.parse(actual)).isEqualTo(ConfigDocument.parse(expected));
+  }
+
+  @Test
+  void theCompiledInSchemaDigestIsTheDigestOfTheShippedSchema() {
+    // Section 9.4: an implementation knows the schema it was built against, by URL and digest.
+    assertThat(SchemaDigest.of(NgramBloomConfig.schemaDocument())).isEqualTo(NgramBloomConfig.SCHEMA_DIGEST);
+    assertThat(NGRAM_CONFIG.schemaDigest()).isEqualTo(NgramBloomConfig.SCHEMA_DIGEST);
+    assertThat(ConfigDocument.parse(NgramBloomConfig.schemaDocument()).member("$id").textValue()).isEqualTo(NgramBloomConfig.SCHEMA_URL);
+  }
+
+  @Test
+  void aDocumentPublishedForAnotherTypeIsNotBelieved() throws IOException {
+    // The same document under another schema has another digest (Section 7.2), so a blob that records the other
+    // type's digest finds the in-band document by that digest and fails verification under its own schema.
+    SchemaDigest otherSchema = SchemaDigest.of("{\"type\":\"object\"}");
+    BuildConfig foreign = NGRAM_CONFIG.document().under(otherSchema);
+    assertThat(foreign.digest()).isNotEqualTo(NGRAM_CONFIG.digest());
+    Blob mislabelled =
+        new Blob(
+            NgramBloomBlobType.TYPE,
+            List.of(7),
+            -1L,
+            -1L,
+            ByteBuffer.wrap(SKUS.toBytes()),
+            null,
+            Map.of(BlobProperties.REFERENCED_DATA_FILE, FILE_A, BlobProperties.CONFIG_DIGEST, foreign.digest()));
+    PuffinBlobTypes.ReadResult result = read(write(BuildConfigBlobType.blob(foreign), mislabelled), BuildConfigResolver.inBandOnly());
+    assertThat(result.decoded()).isEmpty();
+    assertThat(result.skipped()).singleElement().satisfies(s -> assertThat(s.reason()).contains("returned " + NGRAM_CONFIG.digest()));
   }
 
   @Test
@@ -236,7 +268,8 @@ class PuffinBlobTypesTest {
     BuildConfig other = NgramBloomConfig.fixed(TextNormalization.NONE, 3, 4, 8192).toBuildConfig();
     assertThatThrownBy(() -> store.publish(other, "com.example.indexing.orders-sku-ngram", "1"))
         .isInstanceOf(IllegalStateException.class);
-    assertThat(store.resolve("com.example.indexing.orders-sku-ngram", "1")).contains(NGRAM_CONFIG);
+    assertThat(store.resolve("com.example.indexing.orders-sku-ngram", "1")).contains(NGRAM_CONFIG.document());
+    assertThat(store.resolve(NGRAM_CONFIG.digest()).map(d -> d.under(NgramBloomConfig.SCHEMA_DIGEST))).contains(NGRAM_CONFIG);
   }
 
   @Test

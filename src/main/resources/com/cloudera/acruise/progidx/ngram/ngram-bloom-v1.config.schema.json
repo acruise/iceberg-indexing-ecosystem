@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/specs/ngram-bloom-v1/config.schema.json",
+  "title": "Build configuration of com.example.ngram-bloom-v1",
+  "description": "Proposal Section 7.6. Every parameter but the sizing is needed to evaluate predicates; the sizing must also agree for filters to be merged.",
+  "type": "object",
+  "properties": {
+    "normalization": { "enum": ["none", "nfc", "nfkc", "nfkc-casefold"] },
+    "unicode-version": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$" },
+    "gram-length": { "type": "integer", "minimum": 2, "maximum": 8 },
+    "hash": { "const": "xxh64" },
+    "seed": { "type": "integer" },
+    "hash-count": { "type": "integer", "minimum": 1, "maximum": 16 },
+    "bits": { "type": "integer", "minimum": 64, "maximum": 1073741824, "multipleOf": 64 },
+    "target-fpp": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }
+  },
+  "required": ["normalization", "unicode-version", "gram-length", "hash", "seed", "hash-count"],
+  "oneOf": [{ "required": ["bits"] }, { "required": ["target-fpp"] }],
+  "additionalProperties": false
+}

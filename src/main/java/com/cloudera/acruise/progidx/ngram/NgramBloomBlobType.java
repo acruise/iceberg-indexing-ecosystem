@@ -30,10 +30,7 @@ public final class NgramBloomBlobType implements MergeablePuffinBlobType<NgramBl
           .deletes(BlobTypeDescriptor.Deletes.CONSERVATIVE)
           .compression("none", "zstd")
           .config(
-              new ConfigSpec(
-                  Optional.of(java.net.URI.create("https://example.com/specs/ngram-bloom-v1/config.schema.json")),
-                  EVALUATION,
-                  concat(EVALUATION, "bits")))
+              ConfigSpec.of(NgramBloomConfig.SCHEMA_URL, NgramBloomConfig.SCHEMA_DIGEST, EVALUATION, concat(EVALUATION, "bits")))
           .build();
 
   @Override

@@ -128,12 +128,12 @@ public final class PuffinBlobTypes {
     }
     List<SkippedBlob> skipped = new ArrayList<>();
 
-    Map<String, BuildConfig> inBandConfigs = new HashMap<>();
+    Map<String, ConfigDocument> inBandConfigs = new HashMap<>();
     List<BlobMetadata> configBlobs = all.stream().filter(b -> BuildConfigBlobType.TYPE.equals(b.type())).toList();
     for (Pair<BlobMetadata, ByteBuffer> p : reader.readAll(configBlobs)) {
       try {
-        BuildConfig c = BUILD_CONFIG.deserialize(p.first(), p.second(), Optional.empty());
-        inBandConfigs.put(c.digest(), c);
+        ConfigDocument c = BUILD_CONFIG.deserialize(p.first(), p.second(), Optional.empty());
+        inBandConfigs.put(BuildConfigBlobType.recordedDigest(p.first()).orElseThrow(), c);
       } catch (MalformedBlobException e) {
         skipped.add(new SkippedBlob(p.first(), e.getMessage()));
       }
@@ -151,7 +151,7 @@ public final class PuffinBlobTypes {
         continue;
       }
       boolean required = type.descriptor().config().requiresConfig();
-      switch (resolver.resolve(b.properties(), inBand)) {
+      switch (resolver.resolve(b.properties(), inBand, type.descriptor().config().schemaDigest())) {
         case BuildConfigResolver.Resolved r -> toDecode.put(b.offset(), Optional.of(r.config()));
         case BuildConfigResolver.Revoked r -> skipped.add(new SkippedBlob(b, "configuration " + r.digest() + " is revoked"));
         case BuildConfigResolver.NoReference n -> {

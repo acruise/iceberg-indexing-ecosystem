@@ -104,11 +104,14 @@ public final class BuildConfigResolver {
   }
 
   /**
-   * Resolves the reference in {@code blobProperties}. A blob that names a store is resolved there; otherwise the
-   * in-band store is tried first, then the table's default. Whatever a store returns is checked against the recorded
-   * digest. Never throws: store failures and malformed references become {@link Unresolved}.
+   * Resolves the reference in {@code blobProperties} for a blob whose type declares the configuration schema
+   * {@code schema}. A blob that names a store is resolved there; otherwise the in-band store is tried first, then the
+   * table's default. Whatever a store returns is read under {@code schema} and checked against the recorded digest,
+   * which a document written for another type cannot pass (Section 7.2). A reference on a blob whose type declares no
+   * schema is unresolvable, since nothing could verify it. Never throws: store failures and malformed references
+   * become {@link Unresolved}.
    */
-  public Resolution resolve(Map<String, String> blobProperties, BuildConfigStore inBand) {
+  public Resolution resolve(Map<String, String> blobProperties, BuildConfigStore inBand, Optional<SchemaDigest> schema) {
     Optional<ConfigReference> ref;
     try {
       ref = ConfigReference.fromProperties(blobProperties);
@@ -122,22 +125,26 @@ public final class BuildConfigResolver {
     if (revoked.contains(r.digest())) {
       return new Revoked(r.digest());
     }
+    if (schema.isEmpty()) {
+      return new Unresolved("the blob's type declares no configuration schema, so " + r.digest() + " cannot be verified");
+    }
+    SchemaDigest s = schema.get();
     if (r.store().isPresent()) {
       BuildConfigStore named = stores.get(r.store().get());
       if (named == null) {
         return new Unresolved("configuration store " + r.store().get() + " is not declared");
       }
-      return lookUp(named, r.store().get(), r);
+      return lookUp(named, r.store().get(), r, s);
     }
-    Resolution local = lookUp(inBand, "in-band", r);
+    Resolution local = lookUp(inBand, "in-band", r, s);
     if (local instanceof Resolved || defaultStore.isEmpty()) {
       return local;
     }
-    return lookUp(stores.get(defaultStore.get()), defaultStore.get(), r);
+    return lookUp(stores.get(defaultStore.get()), defaultStore.get(), r, s);
   }
 
-  private static Resolution lookUp(BuildConfigStore store, String storeName, ConfigReference r) {
-    Optional<BuildConfig> found;
+  private static Resolution lookUp(BuildConfigStore store, String storeName, ConfigReference r, SchemaDigest schema) {
+    Optional<ConfigDocument> found;
     try {
       found = store.resolve(r.digest());
       if (found.isEmpty() && r.id().isPresent()) {
@@ -149,11 +156,12 @@ public final class BuildConfigResolver {
     if (found.isEmpty()) {
       return new Unresolved("configuration " + r.digest() + " not found in store " + storeName);
     }
-    if (!found.get().digest().equals(r.digest())) {
+    BuildConfig config = found.get().under(schema);
+    if (!config.digest().equals(r.digest())) {
       return new Unresolved(
-          "configuration store " + storeName + " returned " + found.get().digest() + " for " + r.digest());
+          "configuration store " + storeName + " returned " + config.digest() + " for " + r.digest());
     }
-    return new Resolved(found.get());
+    return new Resolved(config);
   }
 
   private static BuildConfigStore instantiate(String name, String impl, ClassLoader loader) {

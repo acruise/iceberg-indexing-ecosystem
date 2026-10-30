@@ -83,20 +83,35 @@ public record BlobTypeDescriptor(
   public record PropertySpec(boolean required, String syntax) {}
 
   /**
-   * Section 7.5. {@code evaluation} lists the configuration keys readers need in order to evaluate predicates;
-   * {@code composition} lists the keys that must agree for blobs to be merged, or is exactly {@code ["digest"]} when
-   * only identical configurations will do.
+   * Section 7.5. {@code schema} is the URL of the JSON Schema for the type's configuration documents and
+   * {@code schemaDigest} the digest of that document's canonical form, which prefixes every configuration digest under
+   * the type (Section 7.2). {@code evaluation} lists the configuration keys readers need in order to evaluate
+   * predicates; {@code composition} lists the keys that must agree for blobs to be merged, or is exactly
+   * {@code ["digest"]} when only identical configurations will do.
    */
-  public record ConfigSpec(Optional<URI> schema, List<String> evaluation, List<String> composition) {
-    public static final ConfigSpec NONE = new ConfigSpec(Optional.empty(), List.of(), List.of());
+  public record ConfigSpec(
+      Optional<URI> schema, Optional<SchemaDigest> schemaDigest, List<String> evaluation, List<String> composition) {
+    public static final ConfigSpec NONE = new ConfigSpec(Optional.empty(), Optional.empty(), List.of(), List.of());
     public static final String DIGEST = "digest";
 
     public ConfigSpec {
+      Objects.requireNonNull(schema, "schema");
+      Objects.requireNonNull(schemaDigest, "schemaDigest");
       evaluation = List.copyOf(evaluation);
       composition = List.copyOf(composition);
+      if (schema.isPresent() != schemaDigest.isPresent()) {
+        throw new IllegalArgumentException("schema and schema-digest are declared together");
+      }
+      if (schema.isEmpty() && !(evaluation.isEmpty() && composition.isEmpty())) {
+        throw new IllegalArgumentException("a type with configuration parameters must declare their schema");
+      }
       if (composition.contains(DIGEST) && composition.size() > 1) {
         throw new IllegalArgumentException("composition is either a list of keys or [\"digest\"], not both");
       }
+    }
+
+    public static ConfigSpec of(String schema, SchemaDigest schemaDigest, List<String> evaluation, List<String> composition) {
+      return new ConfigSpec(Optional.of(URI.create(schema)), Optional.of(schemaDigest), evaluation, composition);
     }
 
     /** Whether every blob of the type must carry a configuration reference that readers resolve. */
@@ -176,6 +191,7 @@ public record BlobTypeDescriptor(
     if (!config.equals(ConfigSpec.NONE)) {
       ObjectNode c = out.putObject("config");
       config.schema().ifPresent(s -> c.put("schema", s.toString()));
+      config.schemaDigest().ifPresent(s -> c.put("schema-digest", s.toString()));
       config.evaluation().forEach(c.putArray("evaluation")::add);
       config.composition().forEach(c.putArray("composition")::add);
     }

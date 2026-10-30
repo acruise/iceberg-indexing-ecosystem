@@ -43,7 +43,10 @@ public final class DirectoryBuildConfigStore implements BuildConfigStore {
     root = Path.of(path);
   }
 
-  /** Publishes a document by digest. Idempotent, since the content determines the file. */
+  /**
+   * Publishes a configuration's document under the configuration's digest. Idempotent, since the digest determines the
+   * content. The same document published under two schemas is stored twice, once per digest, which is the point.
+   */
   public void publish(BuildConfig config) {
     Path file = digestPath(config.digest());
     if (Files.exists(file)) {
@@ -82,15 +85,15 @@ public final class DirectoryBuildConfigStore implements BuildConfigStore {
   }
 
   @Override
-  public Optional<BuildConfig> resolve(String digest) {
+  public Optional<ConfigDocument> resolve(String digest) {
     if (!BuildConfig.isDigest(digest)) {
       return Optional.empty();
     }
-    return read(digestPath(digest)).map(BuildConfig::parse);
+    return read(digestPath(digest)).map(ConfigDocument::parse);
   }
 
   @Override
-  public Optional<BuildConfig> resolve(String configId, String configVersion) {
+  public Optional<ConfigDocument> resolve(String configId, String configVersion) {
     if (!ID.matcher(configId).matches() || !VERSION.matcher(configVersion).matches()) {
       return Optional.empty();
     }

@@ -11,6 +11,10 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.api.Test;
 
 class BuildConfigTest {
+  /** A schema digest of all zero bytes, so that expected values can be recomputed by hand. */
+  private static final SchemaDigest ZERO = SchemaDigest.parse("sha-256:" + "00".repeat(32));
+  private static final SchemaDigest OTHER = SchemaDigest.of("{\"type\":\"object\",\"properties\":{\"seed\":{\"type\":\"integer\"}}}");
+
   /** RFC 8785 Appendix B: IEEE 754 bit patterns and their ECMAScript serializations. */
   @ParameterizedTest
   @CsvSource({
@@ -59,7 +63,7 @@ class BuildConfigTest {
         "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"\\ufb33\":\"Hebrew Letter Dalet With Dagesh\","
             + "\"1\":\"One\",\"\\ud83d\\ude00\":\"Emoji: Grinning Face\",\"\\u0080\":\"Control\","
             + "\"\\u00f6\":\"Latin Small Letter O With Diaeresis\"}";
-    assertThat(BuildConfig.parse(json).canonicalJson())
+    assertThat(ConfigDocument.parse(json).canonicalJson())
         .isEqualTo(
             "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\","
                 + "\"\u00f6\":\"Latin Small Letter O With Diaeresis\",\"\u20ac\":\"Euro Sign\","
@@ -68,42 +72,69 @@ class BuildConfigTest {
 
   @Test
   void digestIgnoresLayoutAndMemberOrder() {
-    BuildConfig a = BuildConfig.parse("{\"gram-length\": 3, \"normalization\": \"nfkc-casefold\", \"nested\": {\"b\": [1, 2.0], \"a\": true}}");
-    BuildConfig b = BuildConfig.parse("{\"nested\":{\"a\":true,\"b\":[1.0,2]},\"normalization\":\"nfkc-casefold\",\"gram-length\":3.0}");
+    BuildConfig a = BuildConfig.parse("{\"gram-length\": 3, \"normalization\": \"nfkc-casefold\", \"nested\": {\"b\": [1, 2.0], \"a\": true}}", ZERO);
+    BuildConfig b = BuildConfig.parse("{\"nested\":{\"a\":true,\"b\":[1.0,2]},\"normalization\":\"nfkc-casefold\",\"gram-length\":3.0}", ZERO);
     assertThat(a).isEqualTo(b);
     assertThat(a.digest()).isEqualTo(b.digest()).matches("sha-256:[0-9a-f]{64}");
     assertThat(a.canonicalJson()).isEqualTo("{\"gram-length\":3,\"nested\":{\"a\":true,\"b\":[1,2]},\"normalization\":\"nfkc-casefold\"}");
   }
 
   @Test
-  void digestIsSha256OfTheCanonicalForm() {
-    // sha256("{}") computed independently: printf '{}' | shasum -a 256
-    assertThat(BuildConfig.parse(" { } ").digest())
-        .isEqualTo("sha-256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+  void digestIsSha256OfTheSchemaDigestThenTheCanonicalForm() {
+    // Section 7.2: H(S || canonical(C)). Computed independently with S = 32 zero bytes:
+    //   (head -c 32 /dev/zero; printf '{}') | shasum -a 256
+    assertThat(BuildConfig.parse(" { } ", ZERO).digest())
+        .isEqualTo("sha-256:fb1634c4e6cd4b1f1afe3ce2d6ef080f7ac5d1f357d723ad4dfca782733b62db");
+    // and not the digest of the document alone: printf '{}' | shasum -a 256
+    assertThat(BuildConfig.parse("{}", ZERO).digest())
+        .isNotEqualTo("sha-256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+  }
+
+  @Test
+  void theSameDocumentUnderTwoSchemasIsTwoConfigurations() {
+    // {} is the configuration of every parameterless type, and {"seed": 0} is valid under any schema with a seed.
+    ConfigDocument empty = ConfigDocument.parse("{}");
+    ConfigDocument seeded = ConfigDocument.parse("{\"seed\": 0}");
+    assertThat(empty.under(ZERO)).isNotEqualTo(empty.under(OTHER));
+    assertThat(empty.under(ZERO).digest()).isNotEqualTo(empty.under(OTHER).digest());
+    assertThat(seeded.under(ZERO).digest()).isNotEqualTo(seeded.under(OTHER).digest());
+    assertThat(seeded.under(OTHER)).isEqualTo(BuildConfig.builder(OTHER).put("seed", 0).build());
+    assertThat(seeded.under(OTHER).document()).isEqualTo(seeded);
+    assertThat(seeded.under(ZERO).agreesOn(seeded.under(OTHER), "seed")).isFalse();
+  }
+
+  @Test
+  void schemaDigestIsOverTheCanonicalSchema() {
+    SchemaDigest spaced = SchemaDigest.of("{ \"properties\": {\"seed\": {\"type\": \"integer\"}}, \"type\": \"object\" }");
+    assertThat(spaced).isEqualTo(OTHER);
+    assertThat(SchemaDigest.parse(OTHER.toString())).isEqualTo(OTHER);
+    assertThat(OTHER.toString()).matches("sha-256:[0-9a-f]{64}");
+    assertThatThrownBy(() -> SchemaDigest.parse("md5:00")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> SchemaDigest.of("[]")).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
   void rejectsWhatCannotBeCanonicalizedExactly() {
-    assertThatThrownBy(() -> BuildConfig.parse("{\"a\":1,\"a\":2}")).isInstanceOf(IllegalArgumentException.class);
-    assertThatThrownBy(() -> BuildConfig.parse("[1]")).isInstanceOf(IllegalArgumentException.class);
-    assertThatThrownBy(() -> BuildConfig.parse("{} {}")).isInstanceOf(IllegalArgumentException.class);
-    assertThatThrownBy(() -> BuildConfig.parse("{\"big\":9007199254740993}")).isInstanceOf(IllegalArgumentException.class);
-    assertThatThrownBy(() -> BuildConfig.parse("{\"s\":\"\\ud800\"}")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> BuildConfig.parse("{\"a\":1,\"a\":2}", ZERO)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> BuildConfig.parse("[1]", ZERO)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> BuildConfig.parse("{} {}", ZERO)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> BuildConfig.parse("{\"big\":9007199254740993}", ZERO)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> BuildConfig.parse("{\"s\":\"\\ud800\"}", ZERO)).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
   void anOmittedKeyIsADisagreement() {
-    BuildConfig fixed = BuildConfig.builder().put("hash-count", 4).put("bits", 65536).build();
-    BuildConfig sameFixed = BuildConfig.parse("{\"bits\":65536.0,\"hash-count\":4}");
-    BuildConfig adaptiveA = BuildConfig.builder().put("hash-count", 4).put("target-fpp", 0.01).build();
-    BuildConfig adaptiveB = BuildConfig.builder().put("hash-count", 4).put("target-fpp", 0.01).build();
+    BuildConfig fixed = BuildConfig.builder(ZERO).put("hash-count", 4).put("bits", 65536).build();
+    BuildConfig sameFixed = BuildConfig.parse("{\"bits\":65536.0,\"hash-count\":4}", ZERO);
+    BuildConfig adaptiveA = BuildConfig.builder(ZERO).put("hash-count", 4).put("target-fpp", 0.01).build();
+    BuildConfig adaptiveB = BuildConfig.builder(ZERO).put("hash-count", 4).put("target-fpp", 0.01).build();
 
     assertThat(fixed.agreesOn(sameFixed, "bits")).isTrue();
     assertThat(fixed.agreesOn(adaptiveA, "bits")).isFalse();
     assertThat(adaptiveA.agreesOn(adaptiveB, "bits")).isFalse();
     assertThat(adaptiveA.agreesOn(adaptiveB, "hash-count")).isTrue();
 
-    var spec = new BlobTypeDescriptor.ConfigSpec(Optional.empty(), List.of("hash-count"), List.of("hash-count", "bits"));
+    var spec = BlobTypeDescriptor.ConfigSpec.of("https://example.com/schema.json", ZERO, List.of("hash-count"), List.of("hash-count", "bits"));
     assertThat(spec.composable(List.of(Optional.of(fixed), Optional.of(sameFixed)))).isTrue();
     assertThat(spec.composable(List.of(Optional.of(adaptiveA), Optional.of(adaptiveB)))).isFalse();
     assertThat(spec.composable(List.of(Optional.of(fixed), Optional.empty()))).isFalse();
@@ -111,12 +142,21 @@ class BuildConfigTest {
 
   @Test
   void digestCompositionNeedsIdenticalConfigurations() {
-    BuildConfig a = BuildConfig.builder().put("k", 1).put("note", "x").build();
-    BuildConfig b = BuildConfig.builder().put("k", 1).put("note", "y").build();
-    var byKey = new BlobTypeDescriptor.ConfigSpec(Optional.empty(), List.of(), List.of("k"));
-    var byDigest = new BlobTypeDescriptor.ConfigSpec(Optional.empty(), List.of(), List.of("digest"));
+    BuildConfig a = BuildConfig.builder(ZERO).put("k", 1).put("note", "x").build();
+    BuildConfig b = BuildConfig.builder(ZERO).put("k", 1).put("note", "y").build();
+    var byKey = BlobTypeDescriptor.ConfigSpec.of("https://example.com/schema.json", ZERO, List.of(), List.of("k"));
+    var byDigest = BlobTypeDescriptor.ConfigSpec.of("https://example.com/schema.json", ZERO, List.of(), List.of("digest"));
     assertThat(byKey.composable(List.of(Optional.of(a), Optional.of(b)))).isTrue();
     assertThat(byDigest.composable(List.of(Optional.of(a), Optional.of(b)))).isFalse();
     assertThat(byDigest.composable(List.of(Optional.of(a), Optional.of(a)))).isTrue();
+  }
+
+  @Test
+  void aTypeWithParametersMustDeclareTheirSchema() {
+    assertThatThrownBy(() -> new BlobTypeDescriptor.ConfigSpec(Optional.empty(), Optional.empty(), List.of("k"), List.of()))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () -> new BlobTypeDescriptor.ConfigSpec(Optional.of(java.net.URI.create("https://example.com/s")), Optional.empty(), List.of(), List.of()))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }

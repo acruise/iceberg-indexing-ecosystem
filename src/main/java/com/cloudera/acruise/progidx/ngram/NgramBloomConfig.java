@@ -1,8 +1,13 @@
 package com.cloudera.acruise.progidx.ngram;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
 import com.cloudera.iceberg.proposed.puffin.BuildConfig;
+import com.cloudera.iceberg.proposed.puffin.SchemaDigest;
 
 /**
  * The build configuration of an n-gram Bloom filter (proposal Section 7.6). Every parameter but the sizing is needed to
@@ -22,6 +27,28 @@ public record NgramBloomConfig(
 
   public static final String HASH = "xxh64";
   public static final int MAX_BITS = 1 << 30;
+
+  /** The descriptor's {@code config.schema} (proposal Section 7.6); the document itself ships with the implementation. */
+  public static final String SCHEMA_URL = "https://example.com/specs/ngram-bloom-v1/config.schema.json";
+
+  /**
+   * The descriptor's {@code config.schema-digest}, compiled in as Section 9.4 asks, and the prefix of every digest
+   * {@link #toBuildConfig} produces. {@link #schemaDocument} is the preimage; a test checks the two agree.
+   */
+  public static final SchemaDigest SCHEMA_DIGEST =
+      SchemaDigest.parse("sha-256:77b72c30ec5a4dfb51c8cea11fb1695081574fbbb40fd747e3606a4748d59d2e");
+
+  /** The JSON Schema this implementation was built against, from the class path. */
+  public static String schemaDocument() {
+    try (InputStream in = NgramBloomConfig.class.getResourceAsStream("ngram-bloom-v1.config.schema.json")) {
+      if (in == null) {
+        throw new IllegalStateException("configuration schema missing from the class path");
+      }
+      return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
 
   public NgramBloomConfig {
     if (gramLength < 2 || gramLength > 8) {
@@ -60,9 +87,13 @@ public record NgramBloomConfig(
   }
 
   /**
-   * @throws IllegalArgumentException if {@code config} does not satisfy this type's configuration schema
+   * @throws IllegalArgumentException if {@code config} was read under another type's schema or does not satisfy this
+   *     type's configuration schema
    */
   public static NgramBloomConfig from(BuildConfig config) {
+    if (!SCHEMA_DIGEST.equals(config.schemaDigest())) {
+      throw new IllegalArgumentException("configuration was read under schema " + config.schemaDigest() + ", not " + SCHEMA_DIGEST);
+    }
     String hash = config.string("hash").orElseThrow(() -> missing("hash"));
     if (!HASH.equals(hash)) {
       throw new IllegalArgumentException("unsupported hash: " + hash);
@@ -79,7 +110,7 @@ public record NgramBloomConfig(
 
   public BuildConfig toBuildConfig() {
     BuildConfig.Builder b =
-        BuildConfig.builder()
+        BuildConfig.builder(SCHEMA_DIGEST)
             .put("normalization", normalization.json())
             .put("unicode-version", unicodeVersion)
             .put("gram-length", gramLength)

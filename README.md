@@ -31,7 +31,7 @@ On the specification side it proposes:
 * a namespace and a two-tier registry for Puffin blob type identifiers, with the major version carried in the identifier
 * a machine-readable descriptor for each type, from which engines and maintenance tools learn what a blob is bound to, how it behaves under compaction and row-level deletes, and what a reader may conclude from it
 * a general notion of data-file-scoped blobs, generalizing the convention deletion vectors already use, under the rule that such a blob must be a pure function of its data file and its build configuration and, unless its descriptor says otherwise, may only exclude
-* references from each blob to the configuration under which it was built, identified by the digest of the configuration's canonical JSON and resolvable from in-band blobs or from shared stores
+* references from each blob to the configuration under which it was built, identified by the digest of the configuration's canonical JSON prefixed by the digest of the type's configuration schema, and resolvable from in-band blobs or from shared stores
 * a reserved property through which a blob can describe an expression over its fields rather than the fields themselves
 * candidate specification text for how compaction treats such blobs.
 
@@ -50,7 +50,7 @@ The code falls into four packages. Everything proposed for inclusion in Iceberg 
 The Java prototype of the interfaces the proposal offers to Iceberg, named so that moving it upstream amounts to replacing the `com.cloudera.iceberg.proposed` prefix with `org.apache.iceberg`. Its dependencies are `iceberg-core` 1.12.0 and the Jackson it brings.
 
 * `PuffinBlobType` encodes and decodes one blob type and exposes its descriptor. Implementations are discovered through `java.util.ServiceLoader` (see `src/main/resources/META-INF/services/com.cloudera.iceberg.proposed.puffin.PuffinBlobType`), and `MergeablePuffinBlobType` adds composition for compaction.
-* `BuildConfig` identifies a build configuration by the SHA-256 digest of its [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) canonical JSON. Blobs refer to it through reserved properties, and `BuildConfigResolver` resolves those references from `build-config-v1` blobs in the same Puffin file or from stores declared in table properties, verifying digests and honoring revocation.
+* `BuildConfig` identifies a build configuration by the SHA-256 digest of its [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) canonical JSON, prefixed by the digest of the blob type's configuration schema so that the same document means something different under each type (`ConfigDocument` is the schema-less document, `SchemaDigest` the prefix). Blobs refer to it through reserved properties, and `BuildConfigResolver` resolves those references from `build-config-v1` blobs in the same Puffin file or from stores declared in table properties, verifying digests and honoring revocation.
 * `PuffinBlobTypes.read` decodes the blobs of a Puffin file that a reader can safely use and reports the rest with reasons.
 * `DataFileIndexBlobs` writes blobs bound to a single data file, following the convention Iceberg already uses for deletion vectors (`snapshot-id` and `sequence-number` of -1, with the data file named in the `referenced-data-file` property).
 

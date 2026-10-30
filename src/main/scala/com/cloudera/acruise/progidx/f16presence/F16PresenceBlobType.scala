@@ -46,6 +46,6 @@ object F16PresenceBlobType {
     .merge(BlobTypeDescriptor.MergePrecision.EXACT)
     .deletes(BlobTypeDescriptor.Deletes.CONSERVATIVE)
     .compression("none", "zstd")
-    .config(new BlobTypeDescriptor.ConfigSpec(Optional.empty(), java.util.List.of(), java.util.List.of()))
+    .config(BlobTypeDescriptor.ConfigSpec.NONE)
     .build()
 }
