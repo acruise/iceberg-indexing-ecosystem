@@ -39,7 +39,7 @@ On the implementation side it proposes a Java service-provider interface, of whi
 
 A related-work section compares the design with the community's secondary index specification (apache/iceberg [PR 16961](https://github.com/apache/iceberg/pull/16961)), which pins table-level indexes to a snapshot where this proposal binds per-file structures to the files they describe, and proposes hosting data-file-scoped blobs as an index type under that specification's metadata model. A second related-work section surveys the nearest precedents outside Iceberg, among them Paimon's file index, Pinot's index SPI, Lucene codecs, ClickHouse skipping indexes, Hudi's expression indexes, PostgreSQL BRIN and Lance's handling of indexes under compaction. The draft also records three small, independent changes that would let Spark, Hive, Impala and Trino report scan telemetry from metastore-backed tables.
 
-The proposal is being edited in parallel in a Google Doc. [`puffin-blob-types-and-compaction.deltas.md`](docs/proposals/puffin-blob-types-and-compaction.deltas.md) records the differences between the two copies until they are reconverged.
+The Markdown file in this repository is the canonical text of the proposal. A Google Doc copy is regenerated from it when one is needed for review.
 
 ## Contents
 
