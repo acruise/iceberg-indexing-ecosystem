@@ -162,6 +162,8 @@ An identifier without a namespace is reserved for types defined by the Iceberg s
 
 The major version is part of the identifier, and a change that would cause an existing reader to misinterpret a payload, or to rely on a descriptor obligation the type no longer meets, MUST be published under a new identifier with an incremented major version. Compatible evolution, such as an additional optional property or a descriptor change that only tightens an obligation, does not change the identifier; the descriptor (Section 5) records it.
 
+> **TODO (minor versions).** Compatible evolution is recorded in the descriptor, but nothing yet records which compatible revision a blob was written under. A forward-compatible minor-versioning scheme, under which a reader can tell what a newer writer may have added and knows it is safe to ignore, is yet to be designed (Section 14.12).
+
 The following identifiers are well formed. The first two are the types the specification already defines, and the remainder use namespaces under the reserved `example` domains to stand in for third parties.
 
 | Identifier | Namespace | Name | Major | Notes |

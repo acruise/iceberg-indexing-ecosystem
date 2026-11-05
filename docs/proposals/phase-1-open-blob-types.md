@@ -49,6 +49,8 @@ An identifier without a namespace is reserved for types defined by the Iceberg s
 
 The major version belongs to the identifier because the identifier is the only thing every reader is guaranteed to look at. A change under which an existing reader could misinterpret a payload, or rely on a descriptor obligation the type no longer meets, MUST be published under a new identifier with an incremented major version, and readers of the old version then ignore the new one as they would any unknown type. Compatible evolution (an additional optional property, or a descriptor change that only tightens an obligation) leaves the identifier alone and is recorded in the descriptor.
 
+> **TODO (minor versions).** Compatible evolution is recorded in the descriptor, but nothing yet records which compatible revision a blob was written under. A forward-compatible minor-versioning scheme, under which a reader can tell what a newer writer may have added and knows it is safe to ignore, is yet to be designed (Section 8).
+
 | Identifier | Status |
 |---|---|
 | `com.example.f16-presence-v2` | Well formed; an incompatible successor to `-v1`, and so a distinct type. |
