@@ -2,8 +2,8 @@
 <project version="4">
   <component name="ScalaCompilerConfiguration">
     <option name="separateProdTestSources" value="true" />
-    <profile name="sbt 1" modules="progressive-indexing" />
-    <profile name="sbt 3" modules="progressive-indexing.main,progressive-indexing.test">
+    <profile name="sbt 1" modules="progressive-indexing,progressive-indexing.iceberg-indexing-blob-types,progressive-indexing.iceberg-indexing-puffin-spi,progressive-indexing.progressive-indexing-simulator" />
+    <profile name="sbt 3" modules="progressive-indexing.iceberg-indexing-blob-types.main,progressive-indexing.iceberg-indexing-blob-types.test,progressive-indexing.iceberg-indexing-puffin-spi.main,progressive-indexing.iceberg-indexing-puffin-spi.test,progressive-indexing.main,progressive-indexing.progressive-indexing-simulator.main,progressive-indexing.progressive-indexing-simulator.test,progressive-indexing.test">
       <option name="deprecationWarnings" value="true" />
       <option name="featureWarnings" value="true" />
       <parameters>

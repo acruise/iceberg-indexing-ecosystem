@@ -41,17 +41,17 @@ A related-work section compares the design with the community's secondary index 
 
 Two worked examples carry the mechanisms through the document: the character n-gram Bloom filter of Section 7.6, an exclusion-only type whose build configuration governs how a reader must evaluate it, and the hot-value position bitmaps of Section 7.9, a locating and aggregating type built from workload telemetry for the values a column is most often asked about, encoded as the same Roaring bitmaps the format uses for deletion vectors, which shows the obligations of a positive per-file index being met with what the format already has.
 
-The Markdown file in this repository is the canonical text of the proposal. A Google Doc copy is regenerated from it when one is needed for review.
+The Markdown file in this repository is the canonical text of the proposal. A [Google Doc copy](https://docs.google.com/document/d/18qlGNPfPy5iT_aRgxLVCqh5W1LuINR7x8Eu2zC6HMoU) exists for review comments, and `tools/gdoc_sync.py` brings it up to date by editing only the words that changed, so that comments anchored to unchanged text survive each sync.
 
 ## Contents
 
-The code falls into four packages. Everything proposed for inclusion in Iceberg is written in Java under `com.cloudera.iceberg.proposed`, following Iceberg's conventions. This project's own code lives under `com.cloudera.acruise.progidx`; the n-gram filter is written in Java, and the f16 filter and the simulator in Scala 2.13.
+The code falls into four packages in three sbt modules. Everything proposed for inclusion in Iceberg is written in Java under `com.cloudera.iceberg.proposed`, following Iceberg's conventions, and forms the `puffin-spi` module. This project's own code lives under `com.cloudera.acruise.progidx`: the two reference blob types form the `blob-types` module, with the n-gram filter written in Java and the f16 filter in Scala 2.13, and the simulator, also in Scala, forms the `simulator` module. The first two are published as libraries (`iceberg-indexing-puffin-spi` and `iceberg-indexing-blob-types`, organization `com.cloudera.acruise`) so that implementations elsewhere can build against them; the simulator is not.
 
 ### `com.cloudera.iceberg.proposed.puffin`
 
 The Java prototype of the interfaces the proposal offers to Iceberg, named so that moving it upstream amounts to replacing the `com.cloudera.iceberg.proposed` prefix with `org.apache.iceberg`. Its dependencies are `iceberg-core` 1.12.0 and the Jackson it brings.
 
-* `PuffinBlobType` encodes and decodes one blob type and exposes its descriptor. Implementations are discovered through `java.util.ServiceLoader` (see `src/main/resources/META-INF/services/com.cloudera.iceberg.proposed.puffin.PuffinBlobType`), and `MergeablePuffinBlobType` adds composition for compaction.
+* `PuffinBlobType` encodes and decodes one blob type and exposes its descriptor. Implementations are discovered through `java.util.ServiceLoader` (see `META-INF/services/com.cloudera.iceberg.proposed.puffin.PuffinBlobType` under each module's `src/main/resources`), and `MergeablePuffinBlobType` adds composition for compaction.
 * `BuildConfig` identifies a build configuration by the SHA-256 digest of its [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) canonical JSON, prefixed by the digest of the blob type's configuration schema so that the same document means something different under each type (`ConfigDocument` is the schema-less document, `SchemaDigest` the prefix). Blobs refer to it through reserved properties, and `BuildConfigResolver` resolves those references from `build-config-v1` blobs in the same Puffin file or from stores declared in table properties, verifying digests and honoring revocation.
 * `PuffinBlobTypes.read` decodes the blobs of a Puffin file that a reader can safely use and reports the rest with reasons.
 * `DataFileIndexBlobs` writes blobs bound to a single data file, following the convention Iceberg already uses for deletion vectors (`snapshot-id` and `sequence-number` of -1, with the data file named in the `referenced-data-file` property).
@@ -129,12 +129,13 @@ The build uses sbt 2.0 and Java 21; `.sdkmanrc` pins the JDK for SDKMAN users. S
 
 ```
 sbt testFull                                  # every suite (sbt 2's `test` runs only suites affected by changes)
-sbt run                                       # every scenario, one seed, full report
-sbt "run --scenarios=cdc,erasure"             # only some scenarios
-sbt "run --kinds=sbloom+f16"                  # only some sets of index kinds (labels without spaces)
-sbt "run --schedulers=survival-weighted,eager-at-write"
-sbt "run --seeds=5"                           # every configuration over five seeds: means and standard deviations
-sbt "run 1000 4000"                           # several background budgets
+sbt publishLocal                              # publish puffin-spi and blob-types to the local Ivy repository
+sbt simulator/run                             # every scenario, one seed, full report
+sbt "simulator/run --scenarios=cdc,erasure"   # only some scenarios
+sbt "simulator/run --kinds=sbloom+f16"        # only some sets of index kinds (labels without spaces)
+sbt "simulator/run --schedulers=survival-weighted,eager-at-write"
+sbt "simulator/run --seeds=5"                 # every configuration over five seeds: means and standard deviations
+sbt "simulator/run 1000 4000"                 # several background budgets
 ```
 
 Lists of kind sets are separated by commas, not semicolons, which sbt treats as command separators. A full single-seed run takes about three quarters of an hour, and a five-seed sweep of all scenarios a little longer, since seeds run in parallel.
