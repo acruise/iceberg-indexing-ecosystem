@@ -17,6 +17,7 @@ Each section stands on its own, so you can start wherever you need to. Terms the
 * [Puffin files and blobs](#puffin-files-and-blobs)
 * [Compaction: rewriting files without changing rows](#compaction-rewriting-files-without-changing-rows)
 * [Row-level deletes](#row-level-deletes)
+* [Why so careful? Writers and readers who never meet](#why-so-careful-writers-and-readers-who-never-meet)
 * [Where each idea appears in the proposal](#where-each-idea-appears-in-the-proposal)
 * [Glossary](#glossary)
 
@@ -132,6 +133,28 @@ Merge-on-read deletes treat the three kinds of index differently, because the da
 
 Version 3 also gives every row a **row identifier** (`_row_id`) that writers keep when they move a row to a new file. The proposal's open questions discuss using it to track which rows an index can no longer vouch for.
 
+## Why so careful? Writers and readers who never meet
+
+A reader of the proposal may fairly ask why it needs so much machinery: versions inside type names, descriptors, digests of settings, and rules about when a reader must refuse to use a blob. The answer is that the writer of a blob and its readers may never meet.
+
+A blob may be written today by one engine and read years from now by another. The two may run different library versions, belong to different organizations, and have different ideas about what a type name means. They cannot ask each other anything. Whatever they need to agree on has to be written down, in the blob or somewhere the blob points to.
+
+Most disagreements between them are harmless. If a reader does not recognize a type, it ignores the blob and the query runs a little slower. The dangerous disagreements are the quiet ones, where the reader *thinks* it understands the blob and is wrong. A filter read that way can answer "definitely not here" for a file that holds the row, and the row silently disappears from the result. Nobody gets an error.
+
+Each mechanism in the proposal exists to turn one such quiet disagreement into a loud one, or into a harmless one:
+
+| What could quietly go wrong | What the proposal does |
+|---|---|
+| The reader's code for a type is older than the writer's, and the format has changed. | The **major version** is part of the type name, so an incompatible change gets a new name that old readers ignore. |
+| The reader's code is right, but the blob was built with different settings, such as a different normalization or hash seed. | Each blob records a **digest** of its build configuration, and the reader evaluates the blob under exactly that configuration. |
+| The reader cannot find the settings the blob was built with. | The reader must **decline** the blob rather than guess. |
+| A compiled-in reader was built against an older description of the type. | The reader carries the descriptor it was built against, and treats any other major version as unknown. |
+| An index outlives the file it describes. | Blobs are bound to data files, and a file never changes, so the index can become unused but not false. |
+
+The rule behind all of these is the same: **when a reader is unsure, it declines, and declining only costs time.** The proposal states this as a principle in Section 1.2, explicitness wherever ambiguity is possible.
+
+None of this assumes anyone acts in bad faith. It assumes only that time passes, software changes, and people forget what they decided. Most of the machinery costs very little: a property or two on each blob, and one lookup per distinct configuration. That is cheap insurance against an error that would otherwise show up as missing rows, long after anyone remembers the change that caused it.
+
 ## Where each idea appears in the proposal
 
 | Idea in this backgrounder | Where the proposal builds on it |
@@ -143,6 +166,7 @@ Version 3 also gives every row a **row identifier** (`_row_id`) that writers kee
 | Settings a reader must match, such as n-gram normalization | Section 7, build configurations |
 | Compaction carrying nothing forward | Section 8, compaction semantics |
 | Engines finding code for a type at run time | Section 9, Java service-provider interface |
+| Writers and readers who never meet; declining instead of guessing | Section 1.2, explicitness; Sections 4.1, 7.1 to 7.4 and 9.4 |
 | Older readers ignoring unknown types; merge-on-read deletes; orphan file removal | Section 11, compatibility |
 | Table-level indexes tied to snapshots | Section 12, the Iceberg index specification |
 
@@ -159,8 +183,10 @@ Version 3 also gives every row a **row identifier** (`_row_id`) that writers kee
 | **Copy-on-write** | Deleting or updating rows by rewriting the whole data file. |
 | **Data file** | A file, usually Parquet, that holds a table's rows. Immutable once written. |
 | **Data-file-scoped blob** | A blob tied to one data file and valid while that file is live. |
+| **Decline** | A reader's refusal to use a blob it cannot be sure it understands. Declining costs time, never correctness. |
 | **Deletion vector** | A bitmap of the deleted row positions in one data file, stored as a Puffin blob. |
 | **Descriptor** | The proposal's machine-readable statement of how a blob type behaves. |
+| **Digest** | A short fingerprint computed from a document, used to check that two parties hold exactly the same settings. |
 | **Exclusion-only blob** | A blob from which a reader may conclude only that part of a file has no match. |
 | **False positive** | A filter answering "maybe" for a file that has no matching row. |
 | **File skipping** | Leaving a data file unread because metadata shows it cannot match. |
@@ -168,6 +194,7 @@ Version 3 also gives every row a **row identifier** (`_row_id`) that writers kee
 | **Format version** | A numbered revision of the Iceberg table specification (2, 3, and 4 in design). |
 | **Live** | Listed by a snapshot's manifests, and therefore part of the table in that snapshot. |
 | **Locating blob** | A blob that states where in a file the matching rows are. |
+| **Major version** | The version number inside a blob type's name. It changes only when old readers could misread new blobs. |
 | **Manifest** | An Avro file listing data files with their locations and column statistics. |
 | **Merge-on-read** | Deleting rows by writing a separate record that readers apply at read time. |
 | **N-gram** | A run of *n* consecutive characters taken from a string. |

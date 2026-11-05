@@ -33,7 +33,7 @@ The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be interpreted a
 
 ### 3.1 Blob type identifiers
 
-A blob type identifier takes the following form, in ABNF:
+A blob type identifier is a single string with one canonical encoding, written in the footer's existing `type` field; its namespace, name and major version are recovered by parsing it, not stored separately. It takes the following form, in ABNF:
 
 ```
 blob-type   = [ namespace "." ] name "-v" major

@@ -70,7 +70,7 @@ public record BlobTypeDescriptor(
     INVALIDATED,
     /**
      * The blob's content is a set of row positions, and its answers are exact once the data file's current position
-     * deletes have been subtracted from it (Section 7.9).
+     * deletes have been subtracted from it; applicable to any type whose content is a position set.
      */
     MASKED;
 

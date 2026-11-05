@@ -25,7 +25,7 @@ The phases are ordered by format impact, with the changes confined to the Puffin
 | 1 | Open blob types: identifiers, registry, core descriptor, discovery | 4, 5 (core fields), 9.1 to 9.4 (identifier and descriptor rules), 11.5, 13.2, 13.3 | Puffin spec amendment and a registry file; footer only | (none) |
 | 2 | Build configurations: digests, stores, reader obligations, revocation | 7.1 to 7.7, the `config` descriptor member, 9.4 (schema rule), 11.4 | Reserved property keys, one standard blob type, table properties; footer and table properties only | phase 1 |
 | 3 | Data-file-scoped blobs and compaction: binding, derivation rule, lifecycle fields, rewrite obligations, location, garbage collection | 6.1, 6.2 (exclusion-only part), 6.3, 6.4, 8, `MergeablePuffinBlobType`, 11.1 to 11.3 | New metadata structure or hosting under the index specification; table-property gate or v4 | phases 1 and 2; the hosting question (14.1) |
-| 4 | Richer inferences and expression inputs: locating and aggregating blobs, `masked` deletes, `input-expressions` | 6.2 (second half), 7.8 to 7.10, 14.5, 14.6, 14.16 | Descriptor extensions only | phase 3 |
+| 4 | Richer inferences and expression inputs: locating and aggregating blobs, `masked` deletes, `input-expressions` | 6.2 (second half), 7.8, 7.9, 14.5, 14.6, 14.16 | Descriptor extensions only | phase 3 |
 | side | Workload telemetry fixes in Spark, Impala and Trino | 10 | outside the format; three small pull requests to other projects | (none) |
 
 ### Phase 1: open blob types
@@ -46,7 +46,7 @@ The binding of 6.1, the derivation rule and the exclusion-only default of 6.2, t
 
 ### Phase 4: richer inferences and expression inputs
 
-Everything the current draft admits under declared obligations: `inference: location` and `inference: aggregate`, the `masked` value of `deletes`, the `input-expressions` property and the `expressions` member of `input-fields`, the hot-value bitmaps of 7.9, the equality-delete application of 7.10, and the positional invalidation direction of 14.16. Each of these is a descriptor extension under the evolution rule of phase 1, so each can be proposed on its own once phase 3 exists. Section 14.5 already leans toward deferring the inferences to a second version; this phasing makes that the plan rather than a leaning. The expression vocabulary (14.6) is the open question that would gate the `input-expressions` half, and it could reasonably be proposed before the inference half, since ClickHouse, Hudi and the index specification all already index expressions.
+Everything the current draft admits under declared obligations: `inference: location` and `inference: aggregate`, the `masked` value of `deletes`, the `input-expressions` property and the `expressions` member of `input-fields`, and the positional invalidation direction of 14.16. Each of these is a descriptor extension under the evolution rule of phase 1, so each can be proposed on its own once phase 3 exists. Section 14.5 already leans toward deferring the inferences to a second version; this phasing makes that the plan rather than a leaning. The expression vocabulary (14.6) is the open question that would gate the `input-expressions` half, and it could reasonably be proposed before the inference half, since ClickHouse, Hudi and the index specification all already index expressions.
 
 ### The side track
 
@@ -62,7 +62,7 @@ The single file would become six, and a reader would face at most about 5,500 wo
 | Phase 1 proposal | Sections 4, 5 (core), 9 (core), 11.5, with its own short motivation drawn from 2.1 and 2.3 | 3,500 words |
 | Phase 2 proposal | Section 7.1 to 7.7 with the n-gram example | 4,500 words |
 | Phase 3 proposal | Sections 6, 8, the lifecycle descriptor fields, 11.1 to 11.3, 12.2 and 12.3 | 5,500 words |
-| Phase 4 proposal | Sections 6.2 (second half), 7.8 to 7.10, 14.16 | 4,500 words |
+| Phase 4 proposal | Sections 6.2 (second half), 7.8, 7.9, 14.16 | 4,500 words |
 | Related work | Section 12.1 and Section 13, as a companion survey in the manner of the backgrounder | 4,500 words |
 
 Each phase document keeps its own motivation, its own RFC 2119 text, its own interface delta, its own compatibility section and its own open questions, so that it can be read, and argued with, without the others. The [backgrounder's](puffin-blob-types-background.md) section map and the README would be updated to point into the new files, and the current monolith would be kept at its path, frozen, with a note at the top pointing at the overview, since the dev-list post and the Google Doc link to it.
