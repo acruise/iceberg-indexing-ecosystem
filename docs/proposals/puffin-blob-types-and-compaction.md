@@ -280,6 +280,8 @@ A **data-file-scoped blob** is a Puffin blob for which:
 
 The blob is valid for a reader of snapshot *S* if and only if its referenced data file is live in *S*; it carries no other binding to snapshots, and the same blob therefore serves every snapshot in which its data file appears. This definition is deliberately the deletion-vector binding generalized to any type whose descriptor declares `scope: data-file`.
 
+> **TODO (mutation in place).** The binding inherits Iceberg's assumption that a data file never changes once written, which nothing in the table specification verifies; a blob could record the referenced file's size and its object store's version token (an S3 ETag, a GCS generation) beside `referenced-data-file`, so that a reader's conditional read fails loudly if the file has been replaced.
+
 Row-level deletes do not change a blob's binding, but they may change its meaning, and readers MUST consult the descriptor's `deletes` field before using a data-file-scoped blob for a data file that has deletes applied in *S*. The common case, an index used to skip files, is unaffected: deleting rows can only make a file less likely to match a predicate, so an index that admitted the file before the delete remains correct, if slightly less selective, afterward.
 
 ### 6.2 What a data-file-scoped blob may assert
