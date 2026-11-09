@@ -3,7 +3,7 @@
 *Phase 1 of [Pluggable Puffin Blob Types and a Compaction-Aware Blob Lifecycle](puffin-blob-types-and-compaction.md), proposed for the Apache Iceberg community.*
 
 **Author:** Alex Cruise  
-**Updated:** November 5, 2026  
+**Updated:** November 9, 2026  
 **Status:** draft for discussion; the first of four phases set out in the [phasing note](phasing.md)
 
 Nothing described here is accepted Iceberg behavior, and the identifiers, property keys and class names below are placeholders chosen to make the discussion concrete. This document is cut from the full proposal and can be read without it; where it reserves a name for a later phase, it says so and defines nothing that depends on that phase.
@@ -16,6 +16,8 @@ The Puffin specification describes a blob as a type string, a list of field ids,
 2. a rule for blob property keys, under which un-namespaced keys reserved by the specification mean the same thing for every type (Section 3.2);
 3. a machine-readable descriptor for each type, and a two-tier registry in which descriptors are published (Sections 3.3 and 4);
 4. a service-provider interface in the Java library through which engines find implementations at run time, together with the rules that an implementation linked in at build time must follow instead (Section 5).
+
+Two further rules govern where blobs of the new types may live until the table specification gives them a place of their own (Section 3.4).
 
 The guarantee the full proposal makes holds here in its simplest form, since a reader that does not understand a blob's type still ignores it, and so **the worst a blob of an unfamiliar type can do is fail to help**. What this phase adds is the means for a reader, a compactor or a person to learn what a familiar type promises, from a document rather than from the code that decodes it.
 
@@ -105,6 +107,18 @@ The descriptor of a quantized presence index, the type that prompted the full pr
 
 The two standard types receive descriptors declaring `scope: snapshot` and `scope: delete-file` respectively, the latter with `compression: ["none"]`, and neither changes in how it is written or read.
 
+### 3.4 Where blobs live
+
+Opening the set of types makes it likely that blobs of new types will be written well before the table specification says anything about where they belong. Until it does, their fate is decided by table maintenance, which treats as reachable only the structures its implementation parses. A blob of a new type can live in one of two places today. Each needs a rule, and neither rule needs a format version, for the reasons given in Section 6.
+
+**Statistics files.** A blob of a type declaring `scope: snapshot` can be listed today only through a snapshot's statistics file. Implementations keep at most one statistics file per snapshot, and the Java implementation's `compute_table_stats` replaces it without carrying forward the blobs it did not write. A single statistics run would therefore discard every third-party snapshot-scoped blob on the snapshots it touches. We propose that a writer replacing the statistics file of a snapshot SHOULD copy into the replacement every blob of the replaced file whose type it does not recognize, with its properties, its `fields`, its `snapshot-id` and its `sequence-number` unchanged. The copy needs no decoding, since the writer can transfer the blob's bytes and footer entry as they stand. A writer MAY omit such a blob when it is removing that blob deliberately, at an operator's request, for example.
+
+The rule is a SHOULD because a MUST could not bind the writers that predate it, and a writer that fails to honor it loses blobs that every reader may ignore, which is the exposure the format already accepts for statistics files themselves. If format version 4 is adopted while this phase is under review, the rule could become a MUST for writers of version 4 tables and stay a SHOULD for writers of earlier versions.
+
+**Files that no table structure reaches.** A blob of a type declaring `scope: data-file` has no structure in table metadata to list it until phase 3, and an implementer who writes such blobs before then will keep them in Puffin files that table metadata does not reference. Orphan file removal deletes every unreferenced file it finds beneath the table location, and an implementation that predates any future structure will do so whatever that structure turns out to be. We therefore propose that a writer that places a Puffin file where no structure in table metadata references it MUST NOT place it beneath the table location. It SHOULD NOT place it beneath any location whose string form shares a prefix with the table location, since at least one implementation has been reported to compare locations by raw string prefix ([apache/iceberg#16493](https://github.com/apache/iceberg/issues/16493)). The writer then owns the collection of those files, and dropping the table with purge leaves them in place for it to find.
+
+The placement rule has a cost that falls outside the format. Catalogs that vend storage credentials commonly scope them to the table location, and a reader given only those credentials cannot read files placed elsewhere. Such a reader loses the blobs and nothing more. Deployments in which engines hold storage credentials of their own are unaffected. The [decoupled metadata note](decoupled-index-metadata.md) proposes a list of index roots in version 4 table metadata, which would let maintenance written for that version spare such files and would let the rule be relaxed for version 4 tables.
+
 ## 4. The registry
 
 Uniqueness follows from namespace ownership, so registration is not a condition of validity. The registry exists for discoverability and for the community's shared picture of what is in use, and it has two tiers.
@@ -179,6 +193,8 @@ These are the rules the Java library applies, restated for a setting in which an
 
 Nothing a current writer produces changes, and no current reader is affected. The two standard types keep their identifiers, their properties and their encodings, and acquire descriptors and `ServiceLoader` registrations in `iceberg-core`. A reader built before this phase continues to ignore types it does not recognize, which now includes namespaced third-party types, exactly as the specification already requires. The table specification is untouched, and no format version increment is needed.
 
+The two rules of Section 3.4 do not change that. Writers that predate the statistics-file rule will go on replacing statistics files without carrying forward blobs they do not recognize, and the loss of advisory blobs is all that can follow. The placement rule binds only writers of the new types, which are new writers by construction, and the worst a writer that ignores it can suffer is the deletion of its own files by orphan removal. Neither rule can cause a reader to return a wrong answer.
+
 Two kinds of existing practice become non-conforming without becoming unreadable. A vendor that has written blobs under an un-namespaced private identifier has used a name this phase reserves, and should move to a namespaced one under a new identifier; existing blobs remain in place and are ignored by every reader that does not know them, as before. A vendor that has attached un-namespaced properties to the standard types has used keys this phase reserves, and should prefix them. Neither case can produce a wrong query result, because neither changes what a conforming reader does with a blob it understands.
 
 ## 7. Related work
@@ -190,5 +206,7 @@ Two JVM projects have run this design for years. [Apache Pinot](https://docs.pin
 **Descriptor evolution.** Descriptors are published in the registry and exposed by implementations, so the two copies can disagree, and an old implementation can expose a descriptor that lacks a member a newer reader has learned to consult. Section 3.1 settles the versioning half (a change that relaxes an obligation takes a new major version, and one that tightens it does not), and Section 3.3 settles what an unrecognized member means. What remains is which copy a consumer trusts when both are at hand. Our leaning is that a consumer acts on the descriptor carried by the implementation that decodes the blob, since that is the contract the code was written to, and uses the registry copy only to detect that an implementation is out of date; we would welcome the case for the opposite rule.
 
 **Registry location and governance.** The second-tier file could equally live outside the main repository, and there may be governance reasons to prefer that, since a registry that accepts entries from anyone who owns a namespace sits uneasily inside a project whose other files change by consensus.
+
+**Whether the statistics-file rule can be stronger.** A SHOULD leaves third-party snapshot-scoped blobs at the mercy of every statistics run from an engine that has not adopted it. A table property declaring that the table carries such blobs would let an aware engine refuse to run a statistics procedure that cannot carry them forward, but it would not stop an unaware one, and only a format version can do that.
 
 **Whether phase 2 should ride along.** The self-describing rule of Section 3.3 lets this phase land alone at the cost of asking parameterized types to wait. The alternative is to propose this phase and the configuration contract as one specification pull request in two sections, which is defensible since both are confined to the Puffin footer, but gives up landing the less contentious part first.

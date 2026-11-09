@@ -32,9 +32,9 @@ A second principle comes from experience with drift: **wherever two parties coul
 4. build configuration references, so that a blob records a content digest of the configuration it was built under and a reader evaluates it under that configuration, resolved from an in-band blob or a shared store, or declines to use it (Section 7);
 5. candidate normative text giving a rewrite per-type obligations toward the blobs attached to its inputs, which come down to drop, rebuild, merge or retain (Section 8).
 
-**The two conditions in item 3 are what make the promise hold.** A blob that is a function of its file and its configuration alone carries only what a reader could recover by reading the file, so ignoring it discards a shortcut rather than a fact; a blob that may only exclude can err in one direction only, toward scanning a file it could have skipped, and that direction is preserved by row-level deletes and by conservative merging alike. The same two conditions are what let the proposal be adopted in pieces, since the namespace, the descriptor and the interfaces can ship without a format change, and file-scoped blobs can be gated by a table property within the current version (Section 11); the [phasing note](phasing.md) proposes the order.
+**The two conditions in item 3 are what make the promise hold.** A blob that is a function of its file and its configuration alone carries only what a reader could recover by reading the file, so ignoring it discards a shortcut rather than a fact; a blob that may only exclude can err in one direction only, toward scanning a file it could have skipped, and that direction is preserved by row-level deletes and by conservative merging alike. The same two conditions are what let the proposal be adopted in pieces, since the namespace, the descriptor and the interfaces can ship without a format change, and file-scoped blobs can be kept in a sidecar outside table metadata, while format version 4 need only tell maintenance where that sidecar is (Sections 6.5, 11 and 14.4); the [phasing note](phasing.md) proposes the order.
 
-**The guarantee is a statement about correctness alone**: a compactor unaware of a type still drops its blobs, so coverage in a fleet of mixed engines is whatever an indexer can rebuild between rewrites (Section 11.2), and orphan-file removal run from an older engine deletes every index file that the metadata structures it understands do not list, which constrains how index files may be listed (Section 11.3). How readers find the blobs for the files they are about to scan is the one design choice the draft leaves open (Sections 6.3 and 14.1 to 14.3): an index manifest in table metadata, or hosting file-scoped blobs as an index type under the community's secondary index specification, apache/iceberg pull request 16961, which we think is the better answer and have not yet put to its authors.
+**The guarantee is a statement about correctness alone**: a compactor unaware of a type still drops its blobs, so coverage in a fleet of mixed engines is whatever an indexer can rebuild between rewrites (Section 11.2), and orphan-file removal run from an older engine deletes every index file that the metadata structures it understands do not list, which constrains how index files may be listed (Section 11.3). The community's secondary index specification has the same exposure as drafted, independently of this proposal, and format version 4 is the cheapest place to close it for both. How readers find the blobs for the files they are about to scan is the one design choice the draft leaves open (Sections 6.3 and 14.1 to 14.3): a sidecar outside table metadata whose location format version 4 would record, or hosting file-scoped blobs as an index type under the community's secondary index specification, apache/iceberg pull request 16961, which we think is the better answer and have not yet put to its authors.
 
 **The claim we would most like scrutinized** is that all of it can be adopted without a format version increment. From the authors of the index specification we would like a view on hosting, and from maintainers of implementations that compile their blob types in rather than discovering them at run time, whether the rules Section 9.4 addresses to them are workable.
 
@@ -327,6 +327,41 @@ The binding says when a blob is valid, but readers also need to find the blobs t
 ### 6.4 Garbage collection
 
 An index manifest row, and the blob it locates, become garbage once the referenced data file is not live in any retained snapshot. Snapshot expiration SHOULD remove such rows and SHOULD delete Puffin files that no longer contain a referenced blob. Because readers check liveness before using a blob, deferring this cleanup never affects correctness; it affects only storage and planning cost. A maintenance operation MAY rewrite a Puffin file whose live blobs have become a small fraction of its size, copying the live blobs into a new file and updating the index manifest in one commit.
+
+### 6.5 A sidecar arrangement for the current format version
+
+We propose that the state locating data-file-scoped blobs live outside table metadata permanently, in what we call the *sidecar* arrangement. Section 12.3 gives the reason: index commits must not contend with the table's own writers. Table metadata needs to know only where that state is, so that maintenance can spare it and collect it. Format version 4 is the natural place to record that, and Section 14.4 proposes how. The arrangement below works at every format version, and at versions before 4 it stands alone. The arrangement has one narrow design goal. Any implementation, whether or not it knows about the sidecar, may leave it stale or leave garbage in it, but none can cause a reader to return a wrong answer. Correctness therefore rests on checks the reader makes against table metadata. It never depends on the sidecar being current.
+
+**Layout.**
+
+* A table property, `puffin.sidecar.location`, names an *index root* and is written once, when the feature is enabled. Implementations that predate the proposal carry table properties through their commits unchanged, so the pointer survives them. A new field in table metadata would not survive them (Section 11.3).
+* The index root MUST be disjoint from the table location and MUST NOT share a string prefix with it, so that no orphan removal ever lists it (Section 11.3).
+* Under the index root the sidecar keeps its own chain of metadata files. Each file lists the current index manifests in the layout of the third option of Section 6.3. The chain advances by an atomic create-if-absent of the next numbered file, a conditional write the major object stores now support. Sidecar commits therefore never contend with data commits.
+* The first metadata file in the chain records the table's UUID.
+
+**Reader obligations.** A reader that uses the sidecar MUST, for each blob it would use:
+
+1. confirm that the UUID recorded in the sidecar equals the table's, so that an index root left behind by a dropped table cannot serve a new table created at the same location or a property copied from another table;
+2. confirm that the referenced data file is live in the snapshot being planned, by joining index rows on the exact location string to the data files selected by ordinary manifest pruning;
+3. confirm that the file size and data sequence number recorded in the index row equal those of the data file's manifest entry. The sidecar learns that a data file has been removed only when an aware process notices, so a blob can outlive its file, and location alone does not identify a file if the location is ever reused. This check carries out as much of the mutation-in-place TODO of Section 6.1 as table metadata allows;
+4. treat any failure to read the sidecar as the absence of an index for the files concerned, and plan those files as an unaware reader would. Failures include a missing or malformed pointer, an unreadable index root, a missing Puffin file, and credentials that do not reach the index root.
+
+Every other rule of this section and of Section 7 applies unchanged, including the derivation rule, the `deletes` field, configuration resolution and revocation. A mismatch at any of the four checks costs coverage and nothing else. That covers location strings that differ only in scheme or normalization.
+
+**What each failure costs.** Every outcome below leaves garbage, missing coverage, or both, and none produces a wrong answer.
+
+| Event | Effect on the sidecar |
+|---|---|
+| Compaction, overwrite or copy-on-write by any writer that does not maintain the sidecar | Rows for the replaced files fail check 2 and become garbage; the output files have no coverage |
+| Snapshot expiration by any engine | The sidecar is untouched; rows for expired files linger until the sidecar's own collector runs |
+| Orphan file removal by any engine | The index root is never listed |
+| Dropping the table with purge | The whole index root leaks, since purge removes only files reachable from table metadata |
+| Two indexers committing at once | The conditional write admits one; the other retries, and no partial state is visible |
+| A reader's credentials that do not reach the index root | The reader plans without indexes (check 4) |
+
+Collection is the job of an aware process, and it carries the one obligation in the arrangement that could affect a reader. A collector MAY remove an index row, and a Puffin file once none of its blobs is referenced, only when the referenced data file is live in no snapshot reachable from any of the table's references. It MUST also wait out a grace period longer than any plan a reader may hold open. A reader that loses that race falls under check 4. The collector can also recognize a leaked index root, either because the catalog no longer has a table of the recorded UUID or because the table at that name has a different one.
+
+**At format version 4.** Under the proposal of Section 14.4, a version 4 table lists its index roots in table metadata, and maintenance that implements version 4 spares, collects and purges what lies under them. Upgrading a table adds its index root to that list in one metadata commit; no manifest moves and no blob is rewritten, and index commits continue in the sidecar's own chain. Implementations that predate version 4 refuse such tables, so the exposure the sidecar works around goes away with the upgrade. The disjointness rule can then be relaxed, which lets an index root sit beneath the table location, where catalogs that vend credentials already grant access. If the hosting of Section 14.1 is adopted, the index root becomes the index specification's root and the sidecar chain becomes its metadata chain. The index specification under review in pull request 16961 already has this shape, since its metadata is located through the catalog rather than through table metadata. Puffin files in a sidecar remain subject to Section 14.8 on encryption.
 
 ## 7. Build Configurations
 
@@ -663,7 +698,7 @@ Every guarantee in this section is relative to the scan a reader would perform w
 
 ### 11.1 Readers and writers that predate the proposal
 
-Readers that predate this proposal already ignore blob types they do not recognize, so namespaced types pose no risk to them. The derivation rule of Section 6.2 is what guarantees that ignoring a data-file-scoped blob of any type is safe. Such readers also ignore index manifests, so they simply plan without the indexes. Writers that predate the proposal will compact tables carrying data-file-scoped blobs as they compact tables today, dropping coverage for the outputs and leaving stale index manifest rows behind; by the liveness rule, neither outcome affects correctness. For these reasons we believe that the identifier namespace, the descriptor and the Java interfaces require no format version change. We also believe that data-file-scoped blobs and index manifests could be introduced as an optional feature of the current format version, gated by a table property so that writers aware of the feature know to maintain index manifests. We would welcome scrutiny of this argument, since it is the claim on which incremental adoption rests.
+Readers that predate this proposal already ignore blob types they do not recognize, so namespaced types pose no risk to them. The derivation rule of Section 6.2 is what guarantees that ignoring a data-file-scoped blob of any type is safe. Such readers also ignore index manifests, so they simply plan without the indexes. Writers that predate the proposal will compact tables carrying data-file-scoped blobs as they compact tables today, dropping coverage for the outputs and leaving stale index manifest rows behind; by the liveness rule, neither outcome affects correctness. For these reasons we believe that the identifier namespace, the descriptor and the Java interfaces require no format version change. Data-file-scoped blobs and index manifests need more care, because every commit from an implementation that does not parse a list of index manifests in table metadata would drop that list (Section 11.3). We therefore propose to keep them out of table metadata altogether, in the sidecar arrangement of Section 6.5. Older implementations cannot reach the sidecar, so the worst they can do to it is leave it stale. Format version 4 would add only a list of index roots, so that maintenance written for that version knows about them (Section 14.4). We would welcome scrutiny of this argument, since it is the claim on which incremental adoption rests.
 
 ### 11.2 What unaware writers cost
 
@@ -683,7 +718,7 @@ Maintenance operations are a sharper exposure than data writers, and one the res
 
 This bears on the open choice of Section 14.2, though less favorably to the second option of Section 6.3 than it first appears. A new list of Puffin files in table metadata is a field that older implementations do not parse, so it protects nothing from them. The existing statistics list is walked by orphan removal, and it can be written by a metadata-only commit, but it does not fit either. It protects only the files it lists, not the files a blob within them refers to. Implementations also hold at most one statistics file per snapshot, and the Java implementation's `compute_table_stats` replaces it without carrying forward blobs it did not write. Placing every blob in that one file would therefore mean rewriting the whole index with each build, and restoring it after each statistics run.
 
-The exposure is not peculiar to this proposal. Iceberg ordinarily avoids it through the format version. Statistics files, partition statistics files and deletion vectors each joined the reachable set in the release that defined them, and an implementation that predates a format version refuses tables written at it, so it never maintains them. A feature introduced without a format version increment, as this one is meant to be, gives up that protection.
+The exposure is not peculiar to this proposal. Deletion vectors avoid it through the format version: an implementation that predates v3 refuses tables written at it, so it never maintains them. Statistics files and partition statistics files do not. The specification lists both as optional in v1 and v2, so an implementation that predates them treats their files as orphans and drops the fields when it commits new metadata. The community accepted that exposure because they are advisory and can be recomputed. A feature introduced without a format version increment, as this one is meant to be, shares that exposure, and indexes cost more to rebuild than statistics.
 
 The secondary index specification under review in pull request 16961 is in the same position:
 
@@ -694,12 +729,16 @@ The secondary index specification under review in pull request 16961 is in the s
 
 A table-level run from any current implementation would therefore delete such an index too. Hosting data-file-scoped blobs under that specification, as Section 12.3 suggests, would not settle the question, and a single answer would serve both proposals.
 
+These gaps belong to the index specification itself and would remain if this proposal were withdrawn. If that specification ships with format version 4 as drafted, the version will fence out implementations that predate it, but it will not oblige implementations of version 4 to spare, collect or purge index files. Maintenance also has no interoperable way to learn of a table's indexes except through a catalog that implements the index endpoints, and once version 4 is published, adding such obligations would be a change that no format version fences. The working note on index reachability lists these problems in full.
+
 Two answers are available without changing the table specification:
 
 * **A location outside the table location.** Index files written under a location disjoint from the table location are never listed by orphan removal. The indexer must then collect its own garbage, and dropping the table with purge from an unaware engine leaks the files. At least one implementation has been reported to match locations by raw string prefix ([apache/iceberg#16493](https://github.com/apache/iceberg/issues/16493)), so the index location SHOULD NOT share a string prefix with the table location.
-* **Narrower listing.** It has been [proposed](https://go.mail-archive.com/dev@iceberg.apache.org/msg09495.html), for reasons unrelated to indexes, that orphan removal list only a table's `data` and `metadata` directories. If every implementation that maintains a table adopted that, a sibling directory beneath the table location would be safe as well.
+* **Narrower listing.** It has been [proposed](https://go.mail-archive.com/dev@iceberg.apache.org/msg09495.html), for reasons unrelated to indexes, that orphan removal list only a table's `data` and `metadata` directories. If every implementation that maintains a table adopted that, a sibling directory beneath the table location would be safe as well. It would not spare the index specification's reference implementation (pull request 18187), which writes its catalog pointer files beneath the table's `metadata` directory.
 
-Failing both, the table property that gates the feature must be understood to forbid destructive maintenance by unaware tooling. That is a heavier demand on operators than Section 11.1 suggests.
+The sidecar arrangement of Section 6.5 takes the first answer. Failing both, the table property that gates the feature must be understood to forbid destructive maintenance by unaware tooling. That is a heavier demand on operators than Section 11.1 suggests.
+
+A [working note](index-reachability.md) collects the evidence: Iceberg's history with statistics files, the index specification's current text, and how Delta Lake, Paimon, Hudi and Lance have handled the same problem.
 
 Snapshot expiration by an unaware engine has the opposite and milder failure: it does not clean index manifest rows or Puffin files, so storage leaks until an aware operation runs. Delete files written by unaware engines are the second row of the table in Section 11.2.
 
@@ -850,11 +889,23 @@ Section 6.3 gives three ways a planner could find the blobs that apply to the da
 
 ### 14.3 Index manifest as a file type or a content type
 
-If the index manifest stays in table metadata, it could be a new file type or a new content type within the existing manifest format. This is the question we are least sure of, and the answer may depend on how the v4 manifest work, which restructures per-file statistics, proceeds. Hosting under the index specification (Section 14.1) would settle it, since the tracking file would take the manifest's place.
+Whether it lives in the sidecar of Section 6.5 or in table metadata, the index manifest could be a new file type or a new content type within the existing manifest format. This is the question we are least sure of, and the answer may depend on how the v4 manifest work, which restructures per-file statistics, proceeds. Hosting under the index specification (Section 14.1) would settle it, since the tracking file would take the manifest's place.
 
 ### 14.4 Which format version
 
-Section 11.1 argues that the identifier namespace, the descriptors and the Java interfaces need no format version change, and that data-file-scoped blobs and index manifests could be gated by a table property within the current version. The index specification is targeted at format version 4, and if the hosting of Section 14.1 is adopted, the two would most naturally ship together. Whether the community prefers an optional feature of the current version or a v4 feature with a clean dependency on the index specification is a question for the dev list.
+Section 11.1 argues that the identifier namespace, the descriptors and the Java interfaces need no format version change. Data-file-scoped blobs need one only for what maintenance must know, not for what readers must know.
+
+Listing index manifests in table metadata would be the wrong use of an increment. Every batch of blobs would become a table commit contending with the table's writers, which is the objection Section 12.3 accepts from the index specification. We therefore keep the manifests in the sidecar of Section 6.5 at every version. What the sidecar cannot do by itself is make maintenance aware of it.
+
+That calls for a smaller addition to version 4: a list, in table metadata, of the table's index roots. The list changes only when an index is enabled or dropped, so it adds no contention worth the name. An implementation of version 4 would then have three obligations:
+
+* Orphan removal treats every file beneath a listed root as reachable, or delegates the root to the index's own collector.
+* Snapshot expiration invokes, or at least does not obstruct, that collector.
+* Dropping a table with purge removes the listed roots.
+
+Implementations that predate version 4 refuse such tables, which closes the exposure of Section 11.3 by the usual mechanism. The same list would serve the index specification of pull request 16961, whose index roots have the same exposure today, so it is a single proposal on behalf of both.
+
+Before version 4, and if this addition misses it, the sidecar stands alone under its disjointness rule. It accepts stale garbage and leaked roots in return for needing no increment. Whether version 4 can take the list, and whether the index specification's authors would share it, are questions for the dev list.
 
 ### 14.5 Admitting locating and aggregating blobs
 
