@@ -2,7 +2,7 @@
 
 *A working note on a metadata mechanism that could serve both the secondary index specification under review in apache/iceberg [pull request 16961](https://github.com/apache/iceberg/pull/16961) and the data-file-scoped blobs of [Pluggable Puffin Blob Types and a Compaction-Aware Blob Lifecycle](puffin-blob-types-and-compaction.md).*
 
-**Status:** working note, not part of the proposal. The identifiers and field names below are placeholders. The companion note on [index reachability](index-reachability.md) sets out the maintenance hazard that motivates the mechanism and the evidence for it.
+**Status:** working note supporting Section 14.2 of [the proposal](puffin-blob-types-and-compaction.md), which summarizes it; the state diagrams and the objections are kept here. The identifiers and field names below are placeholders. The companion note on [index reachability](index-reachability.md) sets out the maintenance hazard that motivates the mechanism and the evidence for it.
 
 ## Where the two designs already agree
 
@@ -199,7 +199,7 @@ Our proposal would replace the single sidecar property of Section 6.5 with an en
 
 ## Open questions
 
-* Whether the index specification's authors would accept a second validity mode, which is the question Section 14.1 of the proposal already asks in a narrower form.
+* Whether the index specification's authors would accept a second validity mode, which is the question Section 14.3 of the proposal already asks in a narrower form.
 * Whether the list of roots belongs in table metadata or in the catalog's table response, and whether a REST catalog may serve it without the table metadata carrying it.
 * Whether the object-store authority should be part of the specification or left to implementations, given the history of the filesystem catalog. Catalog neutrality argues for the specification, since otherwise tables in non-REST catalogs have no interoperable way to commit an index.
 * How the list interacts with branches and tags, and whether an index may be scoped to a branch.
