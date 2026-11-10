@@ -2,7 +2,7 @@
 
 *A plain-language companion to [Pluggable Puffin Blob Types and a Compaction-Aware Blob Lifecycle](puffin-blob-types-and-compaction.md).*
 
-This backgrounder explains the ideas you need in order to read the proposal. It assumes you know what a database table and a query are. It does not assume you know Parquet, Iceberg, or how query engines avoid reading data.
+This backgrounder explains the ideas you need in order to read the proposal. It assumes you know what a database table and a query are. It does not assume you know the Parquet and Iceberg formats, or how query engines avoid reading data.
 
 After reading it, you should be able to follow the proposal's argument and judge its central claim: **an index that a reader ignores can make a query slower, but never wrong.**
 
@@ -27,7 +27,7 @@ An Iceberg table stores its rows in ordinary files, usually in object storage su
 
 Parquet stores data by column rather than by row. A query that reads two columns of a fifty-column table reads only those two columns from disk. Within a file, rows are grouped into **row groups** of perhaps a million rows each, and each column of a row group is stored as a **column chunk** divided into **pages**.
 
-At the end of every Parquet file is a **footer**. The footer records the schema, where each column chunk starts, and simple statistics for each chunk, such as the minimum and maximum value. A reader must fetch the footer before it can find anything else in the file. Parquet can also store a Bloom filter for each column chunk (see [Indexes and filters](#indexes-and-filters-answering-definitely-not-here)), but the reader learns where it is only from the footer.
+At the end of every Parquet file is a **footer**. The footer records the schema and where each column chunk starts, along with simple statistics for each chunk such as the minimum and maximum value. A reader must fetch the footer before it can find anything else in the file. Parquet can also store a Bloom filter for each column chunk (see [Indexes and filters](#indexes-and-filters-answering-definitely-not-here)), but the reader learns where it is only from the footer.
 
 One property matters more than any other for the proposal: **data files are immutable.** Once written, a data file never changes. To change a row, a writer either writes a new file or records the change in a separate file. Because a file never changes, anything computed from it stays true for as long as the file exists.
 
@@ -50,14 +50,14 @@ flowchart TD
     MF2 --> D3["Data file 3"]
 ```
 
-- The **catalog** holds a pointer to the table's current metadata file. A commit succeeds by swapping that pointer atomically, so readers see either the old table or the new one, never a mix.
-- The **table metadata** file lists the table's schema, its properties and its snapshots.
-- A **snapshot** is the complete state of the table after one commit. Every append, delete or rewrite creates a new snapshot, and old snapshots remain readable until they are expired. That is how Iceberg offers time travel.
-- Each snapshot points to a **manifest list**, which points to **manifests**. A manifest is an Avro file with one entry per data file. Each entry records the file's location, its row count, and per-column statistics such as minimum and maximum values.
+- The **catalog** holds a pointer to the table's current metadata file. A commit succeeds by swapping that pointer atomically, so readers see either the old table or the new one and cannot observe a mix of the two.
+- The **table metadata** file records the table's schema and properties along with its list of snapshots.
+- A **snapshot** is the complete state of the table after one commit. Every commit creates a new snapshot, and old snapshots remain readable until they are expired, which is how Iceberg offers time travel.
+- Each snapshot points to a **manifest list**, which points to **manifests**. A manifest is an Avro file with one entry per data file. Each entry records the file's location and row count, along with per-column statistics such as minimum and maximum values.
 
 A data file is **live** in a snapshot if that snapshot's manifests list it. The same data file is usually live in many snapshots, because most commits add files without removing old ones. A file stops being live when a commit removes it, for example a compaction or a delete that rewrites it.
 
-Iceberg has numbered **format versions**. Version 2 added row-level deletes, version 3 added deletion vectors and row identifiers, and version 4 is being designed now.
+Iceberg has numbered **format versions**. Version 2 added row-level deletes and version 3 added deletion vectors and row identifiers; version 4 is being designed now.
 
 ## Query planning: skipping files without opening them
 
@@ -67,7 +67,7 @@ Consider the query `SELECT * FROM orders WHERE sku = 'ABC-100'`. The planner rea
 
 Minimum and maximum values work well when similar values sit together, for example dates in a table written in date order. They work poorly in two common cases:
 
-- **Unsorted, high-variety columns.** If every file holds product codes from `AAA-000` to `ZZZ-999`, every file's range contains `'ABC-100'`, and nothing is skipped.
+- **Unsorted, high-variety columns.** If every file holds product codes from `AAA-000` to `ZZZ-999`, every file's range contains `'ABC-100'`, and the planner cannot skip any of them.
 - **Substring and pattern predicates.** A predicate such as `sku LIKE '%100%'` cannot be checked against a minimum and maximum at all.
 
 Indexes fill this gap. An index is extra information about a file that lets the planner skip it in cases where minimum and maximum values cannot.
@@ -76,7 +76,9 @@ Indexes fill this gap. An index is extra information about a file that lets the 
 
 The indexes the proposal is mostly about are **filters**. A filter answers one question about a file: "Could this file contain a row matching the predicate?" The answer is either "definitely not" or "maybe."
 
-A **Bloom filter** is the classic example. It is an array of bits, all initially zero. To add a value, you hash it several ways and set the bits those hashes point to. To test a value, you hash it the same ways: if any of its bits is zero, the value was never added. If all its bits are set, the value was *probably* added, but those bits may have been set by other values. That second outcome is a **false positive**: the filter says "maybe" for a file that has no match, and the engine opens the file for nothing. A Bloom filter never gives a false negative.
+A **Bloom filter** is the classic example. It is an array of bits, all initially zero. To add a value, you hash it several ways and set the bits those hashes point to. To test a value, you hash it the same ways: if any of its bits is zero, the value was never added.
+
+If all its bits are set, the value was *probably* added, but those bits may have been set by other values. That second outcome is a **false positive**: the filter says "maybe" for a file that has no match, and the engine opens the file for nothing. A Bloom filter never gives a false negative.
 
 This one-sided error is what makes filters safe. A false positive costs time; it never drops a row from a result. The proposal calls blobs with this property **exclusion-only**: a reader may use them only to exclude a file (or a part of one), never to conclude that a match exists.
 
@@ -88,7 +90,9 @@ Other kinds of index make stronger claims, and the proposal treats them separate
 | **Locating** | "The matching rows are at these positions." | An inverted index from values to row positions | The reader could seek to the wrong rows. |
 | **Aggregating** | "This value summarizes the file's rows." | An exact row count or sum | The reader could return a wrong answer without reading the file. |
 
-Some filters need settings that the reader must match exactly. An **n-gram Bloom filter**, for example, splits each string into overlapping pieces of *n* characters (`abc`, `bc-`, `c-1`, and so on) so that it can answer substring predicates. If the filter was built from lower-cased strings, the reader must lower-case its search term the same way. If it doesn't, it looks for pieces that were never added, gets "definitely not," and skips a file that contains the row. The proposal calls these settings a **build configuration**, and much of the design exists to record them so that this mistake cannot happen.
+Some filters need settings that the reader must match exactly. An **n-gram Bloom filter**, for example, splits each string into overlapping pieces of *n* characters (`abc`, `bc-`, `c-1`, and so on) so that it can answer substring predicates.
+
+If the filter was built from lower-cased strings, the reader must lower-case its search term the same way. If it doesn't, it looks for pieces that were never added and gets "definitely not," so it skips a file that contains the row. The proposal calls these settings a **build configuration**, and much of the design exists to record them so that this mistake cannot happen.
 
 ## Puffin files and blobs
 
@@ -99,7 +103,7 @@ The Puffin specification defines only two blob types today:
 - **`apache-datasketches-theta-v1`**, a sketch that estimates how many distinct values a column has across the whole table. It is listed in table metadata as part of a **statistics file**, and it is tied to one snapshot.
 - **`deletion-vector-v1`**, a compact record of which rows of one data file have been deleted (see [Row-level deletes](#row-level-deletes)). It is tied to one data file, not to a snapshot.
 
-There is no registry of other types, no way for an engine to discover code that handles a new type, and no machine-readable description of how a type behaves. A reader that meets a type it does not recognize ignores it. The proposal adds a naming scheme, a registry, a **descriptor** for each type, and a way for each blob to record its build configuration.
+The specification does not keep a registry of other types, and it gives an engine neither a way to discover code that handles a new type nor a machine-readable description of how that type behaves. A reader that meets a type it does not recognize ignores it. The proposal adds a naming scheme, a registry, a **descriptor** for each type, and a way for each blob to record its build configuration.
 
 The two existing types show the two ways a blob can be bound. A statistics file belongs to a snapshot and becomes useless when the table changes. A deletion vector belongs to a data file and stays valid for as long as that file is live, through any number of later snapshots. The proposal generalizes the second binding to any blob type, calling the result a **data-file-scoped blob**.
 
@@ -109,9 +113,11 @@ Tables that receive frequent small writes, such as a stream of events every few 
 
 A compaction is a **rewrite**. The rows after the commit are the same as before, but they live in new files, and the old files stop being live. The old files are physically deleted later, when the snapshots that still list them expire.
 
-The Iceberg specification says what a rewrite must preserve about rows. It says nothing about what a rewrite should do with other information attached to its input files. In practice, compaction does not carry anything forward: statistics files stay attached to the old snapshot, and an index built for an old file describes a file that is no longer live.
+The Iceberg specification says what a rewrite must preserve about rows. It does not say what a rewrite should do with other information attached to its input files. In practice, compaction does not carry anything forward: statistics files stay attached to the old snapshot, and an index built for an old file describes a file that is no longer live.
 
-That index is not wrong. Because the file it describes never changed, the index still describes that file correctly. It is simply **orphaned**: no live file needs it. This is the source of the proposal's safety argument. An index tied to an immutable file can lose its usefulness but cannot become false. The proposal then asks each blob type to declare what a rewrite should do with it: **drop** it, **rebuild** it from the new file, **merge** the old blobs into a new one, or **retain** it.
+That index has not become wrong: the file it describes never changed, so the index still describes that file correctly, and it is merely **orphaned**, since that file is no longer live. This is the source of the proposal's safety argument, that an index tied to an immutable file can lose its usefulness but cannot become false.
+
+The proposal then asks each blob type to declare what a rewrite should do with it: **drop** it, **rebuild** it from the new file, **merge** the old blobs into a new one, or **retain** it.
 
 ## Row-level deletes
 
@@ -127,7 +133,7 @@ Since data files never change, deleting or updating a single row needs a workaro
 
 Merge-on-read deletes treat the three kinds of index differently, because the data file itself does not change:
 
-- An **exclusion-only** filter stays correct. Fewer rows can only mean fewer matches, so "definitely not here" remains true. The filter just becomes less selective.
+- An **exclusion-only** filter stays correct. Fewer rows can only mean fewer matches, so "definitely not here" remains true, and the filter only becomes less selective.
 - A **locating** index stays correct, provided the reader removes the deleted positions from what the index returns.
 - An **aggregating** index becomes wrong. A row count computed before the delete no longer counts the live rows.
 
@@ -137,9 +143,9 @@ Version 3 also gives every row a **row identifier** (`_row_id`) that writers kee
 
 A reader of the proposal may fairly ask why it needs so much machinery: versions inside type names, descriptors, digests of settings, and rules about when a reader must refuse to use a blob. The answer is that the writer of a blob and its readers may never meet.
 
-A blob may be written today by one engine and read years from now by another. The two may run different library versions, belong to different organizations, and have different ideas about what a type name means. They cannot ask each other anything. Whatever they need to agree on has to be written down, in the blob or somewhere the blob points to.
+A blob may be written today by one engine and read years from now by another. The two may belong to different organizations running different library versions, with different ideas about what a type name means, and they cannot ask each other anything, so whatever they need to agree on has to be written down, in the blob or somewhere the blob points to.
 
-Most disagreements between them are harmless. If a reader does not recognize a type, it ignores the blob and the query runs a little slower. The dangerous disagreements are the quiet ones, where the reader *thinks* it understands the blob and is wrong. A filter read that way can answer "definitely not here" for a file that holds the row, and the row silently disappears from the result. Nobody gets an error.
+Most disagreements between them are harmless. If a reader does not recognize a type, it ignores the blob and the query runs a little slower. The dangerous disagreements are the quiet ones, where the reader *thinks* it understands the blob and is wrong. A filter read that way can answer "definitely not here" for a file that holds the row, and the row disappears from the result without anyone seeing an error.
 
 Each mechanism in the proposal exists to turn one such quiet disagreement into a loud one, or into a harmless one:
 
@@ -153,7 +159,7 @@ Each mechanism in the proposal exists to turn one such quiet disagreement into a
 
 The rule behind all of these is the same: **when a reader is unsure, it declines, and declining only costs time.** The proposal states this as a principle in Section 1.2, explicitness wherever ambiguity is possible.
 
-None of this assumes anyone acts in bad faith. It assumes only that time passes, software changes, and people forget what they decided. Most of the machinery costs very little: a property or two on each blob, and one lookup per distinct configuration. That is cheap insurance against an error that would otherwise show up as missing rows, long after anyone remembers the change that caused it.
+None of this assumes bad faith on anyone's part, only that software changes over time and people forget what they decided. Most of the machinery costs little: a property or two on each blob, and one lookup per distinct configuration. That is cheap insurance against an error that would otherwise show up as missing rows, long after anyone remembers the change that caused it.
 
 ## Where each idea appears in the proposal
 
@@ -206,4 +212,4 @@ None of this assumes anyone acts in bad faith. It assumes only that time passes,
 | **Row group** | A horizontal slice of a Parquet file, typically up to about a million rows. |
 | **Snapshot** | The complete state of an Iceberg table after one commit. |
 | **Statistics file** | A Puffin file listed in table metadata and tied to one snapshot. |
-| **Table metadata** | The JSON file that lists a table's schema, properties and snapshots. |
+| **Table metadata** | The JSON file that records a table's schema and properties along with its snapshots. |

@@ -36,7 +36,9 @@ A second principle comes from experience with drift: **wherever two parties coul
 
 **The guarantee is a statement about correctness alone**: a compactor unaware of a type still drops its blobs, so coverage in a fleet of mixed engines is whatever an indexer can rebuild between rewrites (Section 11.2), and orphan-file removal run from an older engine deletes every index file that the metadata structures it understands do not list, which constrains how index files may be listed (Section 11.3). How readers find the blobs for the files they are about to scan is the one design choice the draft leaves open (Sections 6.3 and 14.3 to 14.5): a sidecar outside table metadata whose location format version 4 would record, or hosting file-scoped blobs as an index type under the community's secondary index specification, apache/iceberg pull request 16961, which we think is the better answer and have not yet put to its authors.
 
-**Two open issues reach beyond this proposal, and we would like them discussed early.** Table maintenance in every current implementation decides what to delete by the structures it knows how to read, so index files that table metadata does not list are deleted by orphan removal if they lie beneath the table location, and leaked by expiration and purge wherever they lie. The community's secondary index specification is exposed in the same way as drafted, whether or not this proposal goes forward, and the obligations on maintenance that would close the exposure are cheapest to add before format version 4 is published (Section 14.1). We propose a remedy that would serve both designs: a list of index roots in version 4 table metadata, a common envelope for each index's own metadata chain that declares whether its state is bound to a snapshot or to the liveness of data files, and a maintenance contract that works with any catalog rather than with the REST catalog alone (Section 14.2). The index specification as drafted finds indexes only through the catalog, which in practice means a REST catalog implementing its endpoints; that choice has real advantages, and Section 14.2 sets them beside its costs to deployments on other catalogs, which the specification's review has not yet discussed.
+**Two open issues reach beyond this proposal, and we would like them discussed early.** Table maintenance in every current implementation decides what to delete by the structures it knows how to read, so index files that table metadata does not list are deleted by orphan removal if they lie beneath the table location, and leaked by expiration and purge wherever they lie. The community's secondary index specification is exposed in the same way as drafted, whether or not this proposal goes forward, and the obligations on maintenance that would close the exposure are cheapest to add before format version 4 is published (Section 14.1).
+
+The remedy we propose would serve both designs. Its only change to table metadata is a list of index roots in version 4, which tells maintenance where index files live without its having to consult the catalog; each index keeps its own metadata chain beneath its root, in an envelope that declares whether the index's state is bound to a snapshot or to the liveness of data files (Section 14.2). The index specification as drafted finds indexes only through the catalog, which in practice means a REST catalog implementing its endpoints. That choice has real advantages, and Section 14.2 sets them beside its costs to deployments on other catalogs, a trade the specification's review has not yet taken up.
 
 **The claim we would most like scrutinized** is that all of it can be adopted without a format version increment. From the authors of the index specification we would like a view on hosting, and from maintainers of implementations that compile their blob types in rather than discovering them at run time, whether the rules Section 9.4 addresses to them are workable.
 
@@ -310,9 +312,9 @@ An *aggregating* blob (`inference: aggregate`) states a value computed over the 
 
 Both kinds are derived, so both remain safe to ignore and safe to drop at compaction, and we see no reason to forbid them. What they lose are the properties that exclusion-only types get for free. A type that declares either inference MUST therefore make the following explicit:
 
-* **Deletes.** Its descriptor MUST declare `deletes`, and its definition MUST state how a reader combines the blob with the delete files that apply to the data file. For a locating blob, applying position deletes to the located rows suffices; an aggregating blob is in general invalidated by any delete, unless the aggregate is computed from a position set the reader can mask (`deletes: masked`).
-* **Composition.** Its descriptor MUST NOT declare `merge-precision: conservative`, since an approximate position or aggregate is simply wrong where an approximate filter is merely less selective. Such a type is composed exactly or rebuilt.
-* **Type promotion.** Its definition MUST state what a reader is to do when the source field's type has been promoted since the blob was built. An exclusion-only type with an order-preserving encoding can usually answer that question in one sentence; an aggregating type cannot.
+1. **Deletes.** Its descriptor MUST declare `deletes`, and its definition MUST state how a reader combines the blob with the delete files that apply to the data file. For a locating blob, applying position deletes to the located rows suffices; an aggregating blob is in general invalidated by any delete, unless the aggregate is computed from a position set the reader can mask (`deletes: masked`).
+2. **Composition.** Its descriptor MUST NOT declare `merge-precision: conservative`, since an approximate position or aggregate is simply wrong where an approximate filter is merely less selective. Such a type is composed exactly or rebuilt.
+3. **Type promotion.** Its definition MUST state what a reader is to do when the source field's type has been promoted since the blob was built. An exclusion-only type with an order-preserving encoding can usually answer that question in one sentence; an aggregating type cannot.
 
 A reader that encounters a type declaring an inference it does not implement MUST ignore the blob, which the derivation rule makes safe.
 
@@ -336,10 +338,10 @@ We propose that the state locating data-file-scoped blobs live outside table met
 
 **Layout.**
 
-* A table property, `puffin.sidecar.location`, names an *index root* and is written once, when the feature is enabled. Implementations that predate the proposal carry table properties through their commits unchanged, so the pointer survives them. A new field in table metadata would not survive them (Section 11.3).
-* The index root MUST be disjoint from the table location and MUST NOT share a string prefix with it, so that no orphan removal ever lists it (Section 11.3).
-* Under the index root the sidecar keeps its own chain of metadata files. Each file lists the current index manifests in the layout of the third option of Section 6.3. The chain advances by an atomic create-if-absent of the next numbered file, a conditional write the major object stores now support. Sidecar commits therefore never contend with data commits.
-* The first metadata file in the chain records the table's UUID.
+1. A table property, `puffin.sidecar.location`, names an *index root* and is written once, when the feature is enabled. Implementations that predate the proposal carry table properties through their commits unchanged, so the pointer survives them. A new field in table metadata would not survive them (Section 11.3).
+2. The index root MUST be disjoint from the table location and MUST NOT share a string prefix with it, so that no orphan removal ever lists it (Section 11.3).
+3. Under the index root the sidecar keeps its own chain of metadata files. Each file lists the current index manifests in the layout of the third option of Section 6.3. The chain advances by an atomic create-if-absent of the next numbered file, a conditional write the major object stores now support. Sidecar commits therefore never contend with data commits.
+4. The first metadata file in the chain records the table's UUID.
 
 **Reader obligations.** A reader that uses the sidecar MUST, for each blob it would use:
 
@@ -396,9 +398,9 @@ The same parameters matter to compaction, because two blobs can be composed only
 
 We distinguish three roles a configuration parameter can play, since the obligations differ:
 
-* an **evaluation** parameter is needed to answer a predicate correctly
-* a **composition** parameter must agree between blobs for them to be merged
-* a **provenance** parameter (the policy or job that chose to build the blob, the version of the code that built it) is recorded only so that people and tools can find and reason about blobs after the fact.
+1. an **evaluation** parameter is needed to answer a predicate correctly
+2. a **composition** parameter must agree between blobs for them to be merged
+3. a **provenance** parameter (the policy or job that chose to build the blob, the version of the code that built it) is recorded only so that people and tools can find and reason about blobs after the fact.
 
 A parameter can play more than one role, and a type's descriptor states which of its parameters play which (Section 7.5). One kind of parameter, a transformation applied to a column before it is indexed, sits on the boundary between a build parameter and a description of what the blob is an index of, and Section 7.8 takes it up separately.
 
@@ -559,7 +561,7 @@ Which expression suits a column depends on the shape of the predicates it receiv
 
 ## 8. Compaction Semantics: Candidate Specification Text
 
-The text in this section is offered as a candidate for inclusion in the table specification. The key words MUST, MUST NOT, SHOULD and MAY are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
+The text in this section is offered as a candidate for inclusion in the table specification. The key words MUST, MUST NOT, SHOULD and MAY are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119). As a matter of style, here and throughout the document, a list is numbered when its items look as though they might one day become requirements, or be cited one at a time, and bulleted when it is an informal enumeration.
 
 **8.1 Definitions.** A *rewrite* is a commit that replaces a set of live data files, its *inputs*, with a set of new data files, its *outputs*, such that the rows of the outputs equal the rows of the inputs after the application of any delete files that the rewrite removes. A blob is *attached* to an input if it is data-file-scoped and references that input. An output's *sources* are the inputs that contributed at least one row to it; when a rewrite does not track row provenance, every input is a source of every output.
 
@@ -669,10 +671,10 @@ Run-time discovery of new implementations is cheap on the JVM and expensive almo
 
 We therefore recommend, and would make normative in specification text, that a compiled-in implementation of a blob type be precise about what it supports:
 
-* It MUST match the full identifier of Section 4.1, major version included, and MUST treat any other major version of the same name as an unknown type. A binary built against `com.example.ngram-bloom-v1` ignores `com.example.ngram-bloom-v2` blobs, however similar the payloads may be.
-* It MUST carry the descriptor it was built against, so that the obligations it was compiled to honor are inspectable from the binary and comparable with the registry's current descriptor for the type.
-* It MUST know the configuration schema it was built against, identified by the descriptor's `config.schema` and `config.schema-digest`, and MUST NOT use a blob whose resolved configuration contains an evaluation or composition key it does not implement. A configuration document is exact, by construction of its digest, so the comparison is a set difference over keys rather than a guess at compatibility.
-* It MUST NOT attempt best-effort handling of a payload, descriptor or configuration it does not fully understand. Declining is always correct (Section 6.2); guessing is the one thing the format cannot make safe.
+1. It MUST match the full identifier of Section 4.1, major version included, and MUST treat any other major version of the same name as an unknown type. A binary built against `com.example.ngram-bloom-v1` ignores `com.example.ngram-bloom-v2` blobs, however similar the payloads may be.
+2. It MUST carry the descriptor it was built against, so that the obligations it was compiled to honor are inspectable from the binary and comparable with the registry's current descriptor for the type.
+3. It MUST know the configuration schema it was built against, identified by the descriptor's `config.schema` and `config.schema-digest`, and MUST NOT use a blob whose resolved configuration contains an evaluation or composition key it does not implement. A configuration document is exact, by construction of its digest, so the comparison is a set difference over keys rather than a guess at compatibility.
+4. It MUST NOT attempt best-effort handling of a payload, descriptor or configuration it does not fully understand. Declining is always correct (Section 6.2); guessing is the one thing the format cannot make safe.
 
 These are the same rules the Java library applies, stated for a setting in which the implementation cannot be updated independently of the engine that embeds it. They make the consequence of lagging behind a type's evolution a loss of coverage rather than an incorrect result, which is the only consequence this proposal accepts, and they make upgrading a matter of rebuilding against a newer descriptor and schema rather than of auditing behavior.
 
@@ -735,8 +737,8 @@ These gaps belong to the index specification itself and would remain if this pro
 
 Two answers are available without changing the table specification:
 
-* **A location outside the table location.** Index files written under a location disjoint from the table location are never listed by orphan removal. The indexer must then collect its own garbage, and dropping the table with purge from an unaware engine leaks the files. At least one implementation has been reported to match locations by raw string prefix ([apache/iceberg#16493](https://github.com/apache/iceberg/issues/16493)), so the index location SHOULD NOT share a string prefix with the table location.
-* **Narrower listing.** It has been [proposed](https://go.mail-archive.com/dev@iceberg.apache.org/msg09495.html), for reasons unrelated to indexes, that orphan removal list only a table's `data` and `metadata` directories. If every implementation that maintains a table adopted that, a sibling directory beneath the table location would be safe as well. It would not spare the index specification's reference implementation (pull request 18187), which writes its catalog pointer files beneath the table's `metadata` directory.
+1. **A location outside the table location.** Index files written under a location disjoint from the table location are never listed by orphan removal. The indexer must then collect its own garbage, and dropping the table with purge from an unaware engine leaks the files. At least one implementation has been reported to match locations by raw string prefix ([apache/iceberg#16493](https://github.com/apache/iceberg/issues/16493)), so the index location SHOULD NOT share a string prefix with the table location.
+2. **Narrower listing.** It has been [proposed](https://go.mail-archive.com/dev@iceberg.apache.org/msg09495.html), for reasons unrelated to indexes, that orphan removal list only a table's `data` and `metadata` directories. If every implementation that maintains a table adopted that, a sibling directory beneath the table location would be safe as well. It would not spare the index specification's reference implementation (pull request 18187), which writes its catalog pointer files beneath the table's `metadata` directory.
 
 The sidecar arrangement of Section 6.5 takes the first answer. Failing both, the table property that gates the feature must be understood to forbid destructive maintenance by unaware tooling. That is a heavier demand on operators than Section 11.1 suggests.
 
@@ -885,25 +887,47 @@ The first two questions reach beyond this proposal. They concern any index whose
 
 ### 14.1 Index files and table maintenance
 
-Three maintenance operations decide the fate of every file beneath a table, and each consults only the structures its implementation knows how to read. Orphan removal deletes files beneath the table location that it cannot reach from table metadata, expiration deletes files that only expired snapshots reference, and dropping a table with purge deletes the files table metadata reaches. Index files that no structure known to maintenance lists are therefore deleted by the first if they lie beneath the table location, and leaked by the other two wherever they lie. The deletion is silent, since a planner that finds no index plans without one. Reachability is defined in practice by maintenance code rather than by the specification, and each new structure has to be taught to each engine separately. Statistics files show what that costs even in the best case, a structure the project defined and listed in table metadata: the Java implementation spared them from orphan removal in 1.1.0, collected them on expiration in 1.2.0 and removed them on purge in 1.5.0, and purge still removes only the latest file of each snapshot ([#11876](https://github.com/apache/iceberg/issues/11876)). No format version fenced any of it. Formats that have fared better defined reachability together with the structure. Lance's cleanup deletes an index file only when no valid manifest references it, Paimon made expiration and orphan cleanup follow explicit references to per-file indexes ([apache/paimon#9886](https://github.com/apache/paimon/pull/9886)), and Delta's Record-Level Index RFC ([delta-io/delta#7436](https://github.com/delta-io/delta/pull/7436)) commits index state with the data it describes and pairs it with a protocol feature that makes older VACUUM implementations refuse the table.
+Three maintenance operations decide the fate of every file beneath a table, and each consults only the structures its implementation knows how to read. Orphan removal lists the table location and deletes what it cannot reach from table metadata, so index files that no structure known to maintenance lists are deleted if they lie beneath that location. Expiration and purge, which delete only what table metadata references, leak the same files wherever they lie. The deletion is silent, since a planner that finds no index plans without one.
+
+Reachability is defined in practice by maintenance code rather than by the specification, and each new structure has to be taught to each engine separately. Statistics files show what that costs even in the best case, a structure the project defined and listed in table metadata. The Java implementation learned to handle them over four releases, with no format version to fence the implementations that had not caught up:
+
+| Operation | Handles statistics files from |
+|---|---|
+| Orphan removal | 1.1.0 |
+| Snapshot expiration | 1.2.0 |
+| Drop with purge | 1.5.0, and still only the latest file of each snapshot ([#11876](https://github.com/apache/iceberg/issues/11876)) |
+
+Formats that have fared better defined reachability together with the structure:
+
+* **Lance** deletes an index file only when no valid manifest references it.
+* **Paimon** made expiration and orphan cleanup follow explicit references to per-file indexes ([apache/paimon#9886](https://github.com/apache/paimon/pull/9886)).
+* **Delta Lake**, in its Record-Level Index RFC ([delta-io/delta#7436](https://github.com/delta-io/delta/pull/7436)), commits index state in the same commit as the data it describes, and pairs it with a protocol feature that makes older VACUUM implementations refuse the table.
 
 The secondary index specification of pull request 16961 has the following problems as drafted, on the assumption that it ships with format version 4. None depends on this proposal, and each would remain if this proposal were withdrawn. Three of them can cost a table its indexes, and they can be solved cheaply only before version 4 is published:
 
-* **Conforming maintenance may delete indexes.** The specification imposes no obligation on orphan removal, expiration or purge, so an implementation can conform to version 4 and still delete every index beneath the table location. Whether a table that carries an index must be at version 4 at all has not been established.
+* **Conforming maintenance may delete indexes.** The specification does not oblige orphan removal, expiration or purge to spare index files, so an implementation can conform to version 4 and still delete every index beneath the table location. Whether a table that carries an index must be at version 4 at all has not been established.
 * **The default places indexes where orphan removal looks.** The worked example and the reference implementation (pull request 18187) put index files beneath the table location and pointer files beneath its `metadata` directory, which even the dev-list proposal to narrow orphan removal to `data` and `metadata` would not spare.
 * **The obligations are cheapest before version 4 ships.** Once the version is published without them, any obligation on maintenance is a behavioral change that no format version fences, and implementations will adopt it piecemeal, as they did for statistics files.
 
-The rest cost leaked storage, stale indexes or confusion rather than lost indexes:
+The remaining five cost storage and freshness rather than the indexes themselves:
 
-* **Maintenance has no interoperable way to find a table's indexes.** Discovery is left to the catalog, so tables in catalogs without the index endpoints of pull request 16963, the Hive Metastore, AWS Glue and JDBC catalogs among them, cannot have indexes that maintenance knows about, so the safety of an index under maintenance depends on the catalog as well as its discovery. Section 14.2 sets out what that arrangement buys and costs.
+* **Maintenance cannot find a table's indexes in any interoperable way.** Discovery is left to the catalog, so tables in catalogs without the index endpoints of pull request 16963, the Hive Metastore, AWS Glue and JDBC catalogs among them, cannot have indexes that maintenance knows about. The catalog thus governs an index's safety under maintenance as well as the index's discovery, and Section 14.2 sets out what that arrangement buys and costs.
 * **Dropping the table leaks its indexes.** Index files are purged only when the index itself is dropped with `purgeRequested`.
-* **Table snapshot expiration and index extracts are unrelated.** An extract can outlive the snapshot it indexes, and nothing obliges anyone to collect it.
-* **Tools that copy, register or replicate tables say nothing about indexes.**
+* **Table snapshot expiration and index extracts are unrelated.** An extract can outlive the snapshot it indexes, and neither table maintenance nor the index's own is obliged to collect it.
+* **The specification does not say what copying, registering or replicating a table does to its indexes.**
 * **Rewrites make an index unusable until it is rebuilt.** The reference implementation declines to use an index across a snapshot that is not an append. That follows soundly from a positive index pinned to a snapshot, but an index that is often stale is easy to lose without anyone noticing.
 
-The remedies for the leak on drop and for uncollected extracts are obligations on maintenance, and they belong in the same addition as the first group.
+The leak on drop and the uncollected extracts are remedied by obligations on maintenance, which belong in the same addition as the remedies for the first three.
 
-A blob's scope does not decide whether it is exposed, since the hazard turns on placement and on what table metadata references; the specification's extracts are bound to snapshots and are exposed all the same. Scope decides whether an existing structure can hold the blob. A snapshot-scoped blob fits in a statistics file, which maintenance already honors with the gaps noted above. A data-file-scoped blob stays valid across every snapshot in which its file is live, so a statistics file could hold it only if every later snapshot's writer carried it forward, and one unaware rewrite would discard state that many snapshots had accumulated. File scope is therefore what obliges this proposal to keep a structure parallel to table metadata (Section 6.5). A blob of `puffin-file` scope inherits the hazard at one remove, since it is valid only while the file it describes is reachable.
+A blob's scope does not decide whether it is exposed, since the hazard turns on placement and on what table metadata references; the specification's extracts are bound to snapshots and are exposed all the same. Scope decides instead whether a structure that maintenance already honors can hold the blob, and so how the hazard reaches it.
+
+| Scope | Where the blob can live | How the hazard reaches it |
+|---|---|---|
+| `snapshot` | a statistics file, which maintenance already honors with the gaps noted above | an unaware rewrite of the statistics file loses that snapshot's index |
+| `data-file` | a statistics file only if every later snapshot's writer carried it forward, so in practice a structure parallel to table metadata (Section 6.5) | in full, through the parallel structure; kept in statistics files instead, one unaware rewrite would lose state accumulated over many snapshots |
+| `puffin-file` | any structure its writer chooses, since its validity follows the file it describes rather than where it is kept | at one remove, since the blob is valid only while the file it describes is reachable |
+
+File scope is therefore what obliges this proposal to keep a parallel structure, and so to face the hazard directly.
 
 Section 11.3 describes this proposal's answer under the current format version, a sidecar disjoint from the table location. Section 14.2 proposes the remedy for version 4.
 
@@ -917,7 +941,9 @@ Both designs keep index state out of table metadata, for the same reason: buildi
 
 Each chain has exactly one commit authority, declared in the table's entry, since two authorities for one chain invite a split brain. The catalog may be that authority, as in the index specification. So may the object store, where a commit is a conditional create of the next numbered metadata file, which is the arrangement of Section 6.5. Iceberg's filesystem catalog fell out of favor on object stores for want of an atomic rename. Conditional creation of files that are never renamed removes that objection, but the case will have to be made on its specifics.
 
-The index specification does not name a catalog, and it does not require one that implements the REST protocol. It leaves the mapping from index names to metadata files, and the discovery of a table's indexes, to "the catalog specification", and the only catalog specification that defines either is the REST catalog's, in pull request 16963. Indexes are therefore interoperable in practice only for tables whose catalog implements those endpoints. That choice buys real things, and we do not argue against it. Its costs, however, fall on deployments whose catalogs only swap a pointer to table metadata, the Hive Metastore, AWS Glue and JDBC catalogs among them, and as of November 10 neither the specification nor its review states the trade. The reference implementation shows that the need outside the REST catalog is not hypothetical, since to make index registrations survive a restart it writes pointer files of its own beneath the table location, which serve one engine and are invisible to every other. The table below sets out the trade as we understand it.
+The index specification does not name a catalog, and it does not require one that implements the REST protocol. It leaves two things to "the catalog specification": the mapping from index names to metadata files, and the discovery of a table's indexes. The only catalog specification that defines either is the REST catalog's, in pull request 16963, so indexes are interoperable in practice only for tables whose catalog implements those endpoints.
+
+We do not argue against that choice, which buys real things, but its costs fall on deployments whose catalogs only swap a pointer to table metadata, the Hive Metastore, AWS Glue and JDBC catalogs among them, and as of November 10 neither the specification nor its review states the trade. The need outside the REST catalog is not hypothetical. To make index registrations survive a restart, the reference implementation writes pointer files of its own beneath the table location, which serve one engine and are invisible to every other. The trade, as we understand it, is as follows.
 
 | Concern | Indexes found through the catalog | Indexes found through table metadata |
 |---|---|---|
@@ -930,20 +956,39 @@ The index specification does not name a catalog, and it does not require one tha
 | Registering the table in another catalog | indexes stay behind | roots travel with table metadata, subject to the register rule below |
 | Builds performed by the catalog, or asynchronously | a natural fit | possible through a catalog authority, not required |
 
-The first row is easy to read too generously. Our expectation, which rests on experience rather than on any study we can cite, is that the more a specification asks of its implementers, the more its reference implementation tends to become its only one, and the index endpoints ask a good deal of a catalog. At best, that lengthens the time between the release of version 4 and the point at which the major catalog vendors host indexes. At worst, some vendors decline the endpoints and offer indexing of their own, and the interoperability the specification sets out to provide is lost for their tables. "Catalogs that implement the index endpoints" may in practice name very few catalogs for some time. The second column is not immune to the same tendency, since the maintenance contract and the collectors are behavior every engine must implement. It asks that behavior of engines, however, which already implement table maintenance and already have to learn each new format version, rather than of catalogs, most of which today do no more than swap a pointer.
+The first row is easy to read too generously. Our expectation, which rests on experience rather than on any study we can cite, is that the more a specification asks of its implementers, the more its reference implementation tends to become its only one, and the index endpoints ask a good deal of a catalog. The outcomes we would expect lie between two cases:
 
-The two columns are not exclusive, and the mechanism is meant to combine them. The list in table metadata gives every catalog a floor, in which maintenance and readers find indexes without asking the catalog, while a REST catalog that implements the index endpoints keeps everything in the first column by acting as the index's commit authority, vending credentials for its roots and building indexes on the engine's behalf.
+* At best, the time between the release of version 4 and the point at which the major catalog vendors host indexes grows longer.
+* At worst, some vendors decline the endpoints and offer indexing of their own, and their tables lose the interoperability the specification sets out to provide.
 
-Because index commits are decoupled from table commits, readers treat an index as a claim to be checked against table metadata. A reader confirms that the chain's table UUID and index UUID match the table's entry, and then checks validity by mode. In `snapshot` mode the extract's snapshot must be the one read, or the difference must be reconciled from the file-level changes Iceberg records. In `liveness` mode each referenced data file must be live in the snapshot read with the recorded size and data sequence number. Any failure counts as the absence of an index, so a stale or damaged index costs performance and nothing else.
+The second column is not immune to the same tendency, since the maintenance contract and the collectors are behavior every engine must implement, but it asks that behavior of engines, which already implement table maintenance and already have to learn each new format version, rather than of catalogs, most of which today do no more than swap a pointer.
+
+The two columns are not exclusive, and the mechanism is meant to combine them. The list in table metadata gives every catalog a floor, in which maintenance and readers find indexes without asking the catalog, while a REST catalog that implements the index endpoints keeps what the first column offers by acting as the index's commit authority, from which credential vending and catalog-side builds follow.
+
+Because index commits are decoupled from table commits, readers treat an index as a claim to be checked against table metadata. Before using any state from a chain, a reader confirms:
+
+1. that the chain's table UUID and index UUID match the table's entry;
+2. in `snapshot` mode, that the extract's snapshot is the one being read, or that the difference can be reconciled from the file-level changes Iceberg records;
+3. in `liveness` mode, that each referenced data file is live in the snapshot being read, with the recorded size and data sequence number.
+
+Any failure counts as the absence of an index, so a stale or damaged index can slow a query but cannot change its answer.
 
 Maintenance that implements version 4 would keep four obligations:
 
-* **Orphan removal** treats every file beneath a listed root as reachable and leaves collection within the root to the index.
-* **Snapshot expiration** does not reach into a root, but may invoke the index's collector, which may delete an extract whose snapshot no reference retains, or a row whose data file is live in no retained snapshot, in either case only after a grace period longer than any plan a reader may hold open.
-* **Dropping a table with purge** removes every listed root, or asks the catalog to drop each index it governs.
-* **Registering, copying or replicating a table** says what becomes of its roots, and by default omits them.
+1. **Orphan removal** treats every file beneath a listed root as reachable and leaves collection within the root to the index.
+2. **Snapshot expiration** does not reach into a root, but may invoke the index's collector, which may delete an extract whose snapshot no reference retains, or a row whose data file is live in no retained snapshot, in either case only after a grace period longer than any plan a reader may hold open.
+3. **Dropping a table with purge** removes every listed root, or asks the catalog to drop each index it governs.
+4. **Registering, copying or replicating a table** says what becomes of its roots, and by default omits them.
 
-For the index specification, adopting the mechanism would mean the list, a second validity mode and the maintenance contract, with its commit protocol, extracts and file layouts unchanged. Its index roots could then stay beneath the table location. For this proposal it would mean replacing the sidecar's single table property with an entry in the list and adopting the specification's envelope for the sidecar's chain. The questions we cannot answer alone are whether the specification's authors would accept a `liveness` mode, whether the list belongs in table metadata or may be served by a catalog instead, whether the object-store authority should be specified or left to implementations, how the list interacts with branches and tags, and whether expiration should merely tolerate collectors or be obliged to invoke them.
+The index specification would gain the list and the maintenance contract, together with a second validity mode, and would keep its commit protocol and everything beneath the envelope unchanged; its index roots could then stay beneath the table location. For this proposal the mechanism would mean replacing the sidecar's single table property with an entry in the list and adopting the specification's envelope for the sidecar's chain.
+
+Five questions we cannot answer alone:
+
+* whether the specification's authors would accept a `liveness` mode;
+* whether the list belongs in table metadata, or may be served by a catalog instead;
+* whether the object-store authority should be specified or left to implementations;
+* how the list interacts with branches and tags;
+* whether expiration should merely tolerate collectors or be obliged to invoke them.
 
 ### 14.3 Where index manifests live
 
