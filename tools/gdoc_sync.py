@@ -222,6 +222,14 @@ def md_model(path):
                 for r in body[3]:
                     rows.append([cell_paras(cell[4]) for cell in r[1]])
             blocks.append(("table", [Table(rows)]))
+        elif t == "BlockQuote":
+            # Block quotes (the proposal's TODO notes) become ordinary
+            # paragraphs; their bold lead-in carries the distinction.
+            for sub in c:
+                if sub["t"] in ("Para", "Plain"):
+                    blocks.append(("para", [para_from_inlines(sub["c"])]))
+                else:
+                    raise SystemExit("unsupported block in block quote: %s" % sub["t"])
         elif t in ("HorizontalRule", "RawBlock"):
             continue
         else:
@@ -321,7 +329,19 @@ def doc_model(doc):
 
 def similarity(a, b):
     if isinstance(a, Table) or isinstance(b, Table):
-        return 1.0 if (isinstance(a, Table) and isinstance(b, Table) and a.key() == b.key()) else 0.0
+        if not (isinstance(a, Table) and isinstance(b, Table)):
+            return 0.0
+        if a.key() == b.key():
+            return 1.0
+        # A table the structure phase has just inserted is empty; it matches
+        # the new table of the same shape so the text phase can fill it.
+        def empty(t):
+            return all(not p.text for row in t.rows for cell in row for p in cell)
+        def shape(t):
+            return (len(t.rows), len(t.rows[0]))
+        if shape(a) == shape(b) and (empty(a) or empty(b)):
+            return 0.9
+        return 0.0
     if a.text == b.text:
         return 1.0
     if not a.text or not b.text:
@@ -465,6 +485,11 @@ def plan_structure(pairs, plan):
     tab = plan.tab
     for i, (o, n) in enumerate(pairs):
         if isinstance(n, Table) and o is None:
+            # A new table whose predecessor is itself new waits for the text
+            # phase to create that predecessor; inserting it now would put it
+            # after the last surviving paragraph, too early in the doc.
+            if i > 0 and pairs[i - 1][0] is None:
+                continue
             # new table: insert after the previous doc paragraph
             prev = next((p for p, _ in reversed(pairs[:i]) if p is not None), None)
             if not isinstance(prev, Para):
@@ -529,6 +554,7 @@ def plan_text(pairs, plan):
                 plan.add(o.start, [{"deleteContentRange": {"range": {
                     "startIndex": o.start, "endIndex": o.end, "tabId": tab}}}], "delete %r" % o)
     # insertions, grouped into runs of consecutive new paragraphs
+    runs = []
     i = 0
     while i < len(pairs):
         o, n = pairs[i]
@@ -548,11 +574,17 @@ def plan_text(pairs, plan):
                 body = "\n" + text
             else:
                 raise SystemExit("cannot place inserted paragraphs starting %r" % run[0])
-            plan.add(at, [{"insertText": {"location": {"index": at, "tabId": tab}, "text": body}}],
-                     "insert %d paragraphs before %r" % (len(run), nxt))
+            runs.append((at, [{"insertText": {"location": {"index": at, "tabId": tab}, "text": body}}],
+                         "insert %d paragraphs before %r" % (len(run), nxt)))
             i = j
         else:
             i += 1
+    # Two runs can share an anchor when a new table separates them. Requests at
+    # one index land in front of those applied before them, so the later run
+    # must be applied first; adding runs in reverse keeps that order through
+    # the stable sort in Plan.requests.
+    for at, reqs, note in reversed(runs):
+        plan.add(at, reqs, note)
     # word-level edits in paired paragraphs and table cells
     for o, n in pairs:
         if isinstance(o, Para) and isinstance(n, Para):

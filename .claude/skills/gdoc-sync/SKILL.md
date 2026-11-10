@@ -26,6 +26,8 @@ Known limits, which the tool reports or refuses rather than guesses at:
 
 - New code blocks become 9pt Roboto Mono paragraphs, since the API cannot create the Docs code-block element.
 - Nested bullets are created at the top level, with a note.
+- Block quotes (the proposal's `> **TODO**` notes) become ordinary paragraphs; their bold lead-in carries the distinction.
+- A new table whose preceding paragraph is also new waits a round, so it is inserted after the text phase has created that paragraph.
 - A change in a table's column count is refused; adjust that table by hand.
 - Blank separator paragraphs already in the doc are never deleted.
 
