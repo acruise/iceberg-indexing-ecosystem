@@ -6,7 +6,7 @@
 
 ## Where the two designs already agree
 
-Both designs keep index state out of table metadata, and for the same reason. The index specification commits an index's metadata by an atomic swap of its own, located through the catalog, so that building or refreshing an index never contends with the table's writers. Section 12.3 of our proposal concedes that this is the better choice, and Section 6.5 now keeps index manifests in a sidecar with a commit chain of its own.
+Both designs keep index state out of table metadata, and for the same reason. The index specification commits an index's metadata by an atomic swap of its own, located through the catalog, so that building or refreshing an index never contends with the table's writers. Section 12.3 of our proposal concedes that this is the better choice, and Section 6.5 now keeps index manifests in a discovery chain, which has a commit chain of its own.
 
 Both designs then leave the same gap. Table maintenance that is unaware of indexes either deletes their files, if they lie beneath the table location, or leaks them, if they do not, and in neither design can a table tell its maintenance that an index exists.
 
@@ -18,9 +18,9 @@ Beyond that the designs differ in ways that matter for a shared mechanism, and t
 | Validity | the extract's snapshot; positive inference requires exact agreement with the rows read | liveness of the referenced data file in the snapshot read; negative by default |
 | Tracking layer | tracking file over region files (Parquet, Avro or ORC) | index manifest over Puffin blobs |
 | Commit authority | the catalog, through the REST endpoints of PR 16963 | conditional create-if-absent on the object store |
-| Discovery | the catalog | a table property naming the index root |
-| Identity binding | the index's catalog identifier and its source table | the table UUID recorded in the sidecar |
-| Garbage collection | unspecified at the table level; the extracts list is the only reachability root for index files | the sidecar's own collector, with a grace period |
+| Discovery | the catalog | a table property naming the discovery root |
+| Identity binding | the index's catalog identifier and its source table | the table UUID recorded in the discovery chain |
+| Garbage collection | unspecified at the table level; the extracts list is the only reachability root for index files | the discovery chain's own collector, with a grace period |
 
 Everything above the tracking layer is common machinery and everything at or below it is specific to the kind of index, and that boundary is where the mechanism should be cut.
 
@@ -28,7 +28,7 @@ Everything above the tracking layer is common machinery and everything at or bel
 
 The mechanism has three layers, and only the first touches table metadata.
 
-**The table's list of index roots.** A version 4 table carries, in table metadata, a list of the indexes that maintenance must know about. Each entry records the index's UUID and the location of its root, and declares the index's commit authority. The list changes when an index is created or dropped and at no other time, so the contention it introduces is one table commit per index lifetime. A table at an earlier version records the same entries in a table property, which implementations that predate the mechanism carry through their commits unchanged and otherwise ignore.
+**The table's list of discovery roots.** A version 4 table carries, in table metadata, a list of the indexes that maintenance must know about. Each entry records the index's UUID and the location of its root, and declares the index's commit authority. The list changes when an index is created or dropped and at no other time, so the contention it introduces is one table commit per index lifetime. A table at an earlier version records the same entries in a table property, which implementations that predate the mechanism carry through their commits unchanged and otherwise ignore.
 
 **The index metadata chain.** Each index has its own chain of JSON metadata files beneath its root, in the shape the index specification already defines: a current metadata file with its metadata log, and the definition of the index. The common envelope adds the fields that make the chain checkable against its table:
 
@@ -73,12 +73,12 @@ The index specification puts both discovery and commits through REST catalog end
 
 We therefore propose that the mechanism function, in full, with a catalog that is unaware of indexes, and that it treat the REST endpoints as an optional authority and accelerator. The design above already allows that, and the property should be stated as a principle rather than left as a consequence:
 
-* The list of index roots lives in table metadata, which every catalog stores and swaps, so maintenance and readers discover indexes without consulting the catalog.
+* The list of discovery roots lives in table metadata, which every catalog stores and swaps, so maintenance and readers discover indexes without consulting the catalog.
 * An index's commit authority is declared per index. The object-store authority needs only conditional writes, and the catalog authority is available where the catalog offers it.
 * Correctness never depends on the catalog. The reader's rule checks every index against table metadata, so a catalog that serves a stale or wrong index costs performance alone.
 * A REST catalog may still add value by vending credentials that reach the listed roots and serving the list in its table response. It may also commit an index under its own authority, with whatever access control it applies.
 
-The cost of neutrality falls on the object-store authority, which then becomes the default rather than a fallback and must stand up to the scrutiny described under commit authority. Credential scoping turns out to be a narrower problem than it first appears. Deployments without a REST catalog usually give engines storage credentials of their own rather than vended ones, so an index root outside the table location is reachable wherever the engine's credentials reach. The problem is confined to vending catalogs, which are also the catalogs able to solve it.
+The cost of neutrality falls on the object-store authority, which then becomes the default rather than a fallback and must stand up to the scrutiny described under commit authority. Credential scoping turns out to be a narrower problem than it first appears. Deployments without a REST catalog usually give engines storage credentials of their own rather than vended ones, so a discovery root outside the table location is reachable wherever the engine's credentials reach. The problem is confined to vending catalogs, which are also the catalogs able to solve it.
 
 ## The reader's rule
 
@@ -122,12 +122,12 @@ stateDiagram-v2
 
 ## The maintenance contract
 
-The list of index roots exists so that maintenance written for version 4 can keep four obligations.
+The list of discovery roots exists so that maintenance written for version 4 can keep four obligations.
 
 1. **Orphan removal** treats every file beneath a listed root as reachable. It neither lists nor deletes there, and it leaves collection within the root to the index.
-2. **Snapshot expiration** does not reach into an index root. After expiring snapshots it may notify, or invoke, each listed index's collector, and the mechanism defines what a collector may delete. In `snapshot` mode that is an extract whose snapshot is no longer retained by any reference. In `liveness` mode it is a row whose data file is not live in any retained snapshot. In both modes the collector deletes only after a grace period longer than any plan a reader may hold open.
+2. **Snapshot expiration** does not reach into a discovery root. After expiring snapshots it may notify, or invoke, each listed index's collector, and the mechanism defines what a collector may delete. In `snapshot` mode that is an extract whose snapshot is no longer retained by any reference. In `liveness` mode it is a row whose data file is not live in any retained snapshot. In both modes the collector deletes only after a grace period longer than any plan a reader may hold open.
 3. **Dropping a table with purge** removes every listed root, or, for a catalog authority, asks the catalog to drop each index.
-4. **Registering or copying a table**, replication included, must say what happens to its index roots, and the default should be to omit them. A copy that keeps the source's table UUID but not its data file locations would fail the liveness check harmlessly, but a copy that kept both would share the source's index under two authorities, which is the split brain again.
+4. **Registering or copying a table**, replication included, must say what happens to its discovery roots, and the default should be to omit them. A copy that keeps the source's table UUID but not its data file locations would fail the liveness check harmlessly, but a copy that kept both would share the source's index under two authorities, which is the split brain again.
 
 The contract leaves index internals to the index. Table maintenance learns only where each index is and whose job it is to clean it, which is enough to stop it from deleting index files and enough to tell it what to purge.
 
@@ -171,7 +171,7 @@ stateDiagram-v2
 ```
 
 
-An index root has a lifecycle of its own, and the order of its steps matters. The root is written before the table commit that lists it, so a failed table commit leaves an unlisted root, which orphan removal's age threshold protects only for as long as the threshold lasts. Dropping an index removes the entry before the root, so that maintenance stops treating the root as reachable only after readers have stopped being directed to it.
+A discovery root has a lifecycle of its own, and the order of its steps matters. The root is written before the table commit that lists it, so a failed table commit leaves an unlisted root, which orphan removal's age threshold protects only for as long as the threshold lasts. Dropping an index removes the entry before the root, so that maintenance stops treating the root as reachable only after readers have stopped being directed to it.
 
 ```mermaid
 stateDiagram-v2
@@ -191,9 +191,9 @@ stateDiagram-v2
 
 ## What each design would change
 
-The index specification would gain the table's list of roots and the maintenance contract, together with a validity mode that admits a second value. Its catalog commit protocol, extracts, tracking files and region files are unchanged, and its worked example could keep its index root beneath the table location once version 4 orphan removal honors the list. The file filter index suggested in Section 12.3 of our proposal becomes an ordinary index type under the specification, in `liveness` mode, without the specification having to adopt Puffin for region files.
+The index specification would gain the table's list of roots and the maintenance contract, together with a validity mode that admits a second value. Its catalog commit protocol, extracts, tracking files and region files are unchanged, and its worked example could keep its discovery root beneath the table location once version 4 orphan removal honors the list. The file filter index suggested in Section 12.3 of our proposal becomes an ordinary index type under the specification, in `liveness` mode, without the specification having to adopt Puffin for region files.
 
-Our proposal would replace the single sidecar property of Section 6.5 with an entry in the list (or in its pre-version-4 property form) and adopt the specification's envelope for the sidecar's metadata chain, declaring the object store as the chain's authority wherever the catalog does not offer index endpoints. Section 6.5's reader checks become the `liveness` half of the reader's rule. The disjointness rule of Section 11.3 remains necessary only for tables below version 4.
+Our proposal would replace the single discovery chain property of Section 6.5 with an entry in the list (or in its pre-version-4 property form) and adopt the specification's envelope for the discovery chain, declaring the object store as the chain's authority wherever the catalog does not offer index endpoints. Section 6.5's reader checks become the `liveness` half of the reader's rule. The disjointness rule of Section 11.3 remains necessary only for tables below version 4.
 
 ## Objections
 
@@ -201,7 +201,7 @@ Our proposal would replace the single sidecar property of Section 6.5 with an en
 
 **Two validity modes complicate the specification.** They do, and they could be avoided by forcing file-scoped state into snapshot-pinned extracts. That would make every append invalidate a file filter index that the append did not affect, and would bring the reference implementation's refusal to use an index across non-append snapshots ([pull request 18187](https://github.com/apache/iceberg/pull/18187)) to an index type that does not need it. The modes describe a real difference in what the two kinds of index assert, which Section 12.2 of the proposal sets out.
 
-**Delegating collection to the index means an index with no running collector leaks.** That is true, and it is the same leak the sidecar already accepts. Purge bounds it, because a dropped table takes its listed roots with it. An optional hook by which expiration invokes a collector shipped with the index type's implementation would bound it further, at the cost of running index code inside table maintenance.
+**Delegating collection to the index means an index with no running collector leaks.** That is true, and it is the same leak the discovery chain already accepts. Purge bounds it, because a dropped table takes its listed roots with it. An optional hook by which expiration invokes a collector shipped with the index type's implementation would bound it further, at the cost of running index code inside table maintenance.
 
 **Credential scoping is unresolved.** Catalogs that vend storage credentials scope them to locations they know. With the list in table metadata a catalog can include every listed root, but it is not obliged to, and a reader without access falls back to planning without the index. That is safe and should probably be stated as a SHOULD for catalogs.
 

@@ -4,7 +4,7 @@
 
 **Status:** working note, not part of the proposal. The proposal is not intended to land all at once; this note says how it could be cut into phases that are, and the proposal links back here from its header.
 
-The proposal runs to some 22,000 words, and the [DISCUSS] post of November 2, 2026 said as much. Its mechanisms were written as one design because each was tested against the same running example, but they do not have to be adopted as one, and the proposal already makes the argument for separability in Section 11.1: the namespace and the descriptor can ship without a format change, as can the interfaces, while file-scoped blobs need either a sidecar outside table metadata or a format version. This note takes that argument the rest of the way and proposes four phases, each small enough to be reviewed in a sitting and to land on its own, together with a side track that was never part of the specification work.
+The proposal runs to some 22,000 words, and the [DISCUSS] post of November 2, 2026 said as much. Its mechanisms were written as one design because each was tested against the same running example, but they do not have to be adopted as one, and the proposal already makes the argument for separability in Section 11.1: the namespace and the descriptor can ship without a format change, as can the interfaces, while file-scoped blobs need either a discovery chain outside table metadata or a format version. This note takes that argument the rest of the way and proposes four phases, each small enough to be reviewed in a sitting and to land on its own, together with a side track that was never part of the specification work.
 
 ## Principles
 
@@ -26,7 +26,7 @@ The table summarizes each phase; the sections of the current draft that each one
 |---|---|---|---|
 | 1 | Open blob types: identifiers, registry, core descriptor, discovery | Puffin spec amendment and a registry file; footer only, plus a placement rule and one writer obligation | (none) |
 | 2 | Build configurations: digests, stores, reader obligations, revocation | Reserved property keys, one standard blob type, table properties; footer and table properties only | phase 1 |
-| 3 | Data-file-scoped blobs and compaction: binding, derivation rule, lifecycle fields, rewrite obligations, location, garbage collection | Sidecar outside table metadata (6.5) or hosting under the index specification, at every version; v4 adds a list of index roots for maintenance | phases 1 and 2; the hosting question (14.3) |
+| 3 | Data-file-scoped blobs and compaction: binding, derivation rule, lifecycle fields, rewrite obligations, location, garbage collection | Discovery chain outside table metadata (6.5) or hosting under the index specification, at every version; v4 adds a list of discovery roots for maintenance | phases 1 and 2; the hosting question (14.3) |
 | 4 | Richer inferences and expression inputs: locating and aggregating blobs, `masked` deletes, `input-expressions` | Descriptor extensions only | phase 3 |
 | side | Workload telemetry fixes in Spark, Impala and Trino | outside the format; three small pull requests to other projects | (none) |
 
@@ -124,15 +124,15 @@ If v4 ships while the phase is under review, the phase could state carry-forward
 
 **Phase 2: unnecessary.** Configuration references are properties, and out-of-band stores are declared in table properties, which older writers carry through commits unchanged. The one hazard, a reader that knows a type but not the configuration contract, is fenced by the rule of Section 11.4 that a type acquires evaluation parameters only under a new major version. A type version does the work of a format version here, for the only implementations at risk.
 
-**Phase 3: very desirable, for maintenance only.** Index state stays outside table metadata at every version, either in the sidecar of Section 6.5 or hosted under the index specification of pull request 16961, so that index commits never contend with the table's writers (Section 12.3). Readers do not need an increment. Old writers carry the sidecar's one table property through their commits, and the reader's checks make a stale sidecar cost coverage rather than correctness.
+**Phase 3: very desirable, for maintenance only.** Index state stays outside table metadata at every version, either in the discovery chain of Section 6.5 or hosted under the index specification of pull request 16961, so that index commits never contend with the table's writers (Section 12.3). Readers do not need an increment. Old writers carry the discovery chain's one table property through their commits, and the reader's checks make a stale discovery chain cost coverage rather than correctness.
 
-What an increment buys is maintenance that knows the index exists. A version 4 table would list its index roots in table metadata, and version 4 maintenance would act on what lies beneath them: orphan removal would spare it, expiration would collect it and purge would remove it (Sections 14.2 and 14.6). The list changes only when an index is enabled or dropped, so the contention it adds is negligible, and it serves the index specification's roots as well as ours. Version 4 is being prepared anyway, so the plan is to propose the list for it. Before then, or if the list misses version 4, the sidecar stands alone under its disjointness rule and accepts stale garbage and leaked roots.
+What an increment buys is maintenance that knows the index exists. A version 4 table would list its discovery roots in table metadata, and version 4 maintenance would act on what lies beneath them: orphan removal would spare it, expiration would collect it and purge would remove it (Sections 14.2 and 14.6). The list changes only when an index is enabled or dropped, so the contention it adds is negligible, and it serves the index specification's roots as well as ours. Version 4 is being prepared anyway, so the plan is to propose the list for it. Before then, or if the list misses version 4, the discovery chain stands alone under its disjointness rule and accepts stale garbage and leaked roots.
 
-Putting index manifests themselves in table metadata, as the third option of Section 6.3 once assumed, would make the increment more than desirable, since every commit from an older implementation would drop them. It would also bring back the contention the sidecar avoids, and we no longer propose it.
+Putting index manifests themselves in table metadata, as the third option of Section 6.3 once assumed, would make the increment more than desirable, since every commit from an older implementation would drop them. It would also bring back the contention the discovery chain avoids, and we no longer propose it.
 
 **Phase 4: unnecessary for the table format; for Puffin, only if the encoding changes.** The phase consists of descriptor extensions, which old readers never see because they do not recognize the types that use them. Encoding `input-expressions` as a canonical JSON string avoids a Puffin version. Letting property values be arbitrary JSON would need one, or a new optional member of the blob metadata, as Section 7.8 says.
 
-In short, no phase needs an increment to stay correct. Phase 3 is the only place where one is very desirable, and then only to make maintenance aware of index roots, while index state itself stays outside table metadata. The plan is to propose the list of roots for version 4; until then, and if it misses that version, the sidecar serves without one.
+In short, no phase needs an increment to stay correct. Phase 3 is the only place where one is very desirable, and then only to make maintenance aware of discovery roots, while index state itself stays outside table metadata. The plan is to propose the list of roots for version 4; until then, and if it misses that version, the discovery chain serves without one.
 
 ## The document split
 
@@ -143,7 +143,7 @@ The single file would become six, and a reader would face at most about 5,500 wo
 | Overview | The executive summary, the invariant, the phase roadmap with its dependencies, the relation to the index specification, and a table saying where each open question now lives | 1,500 words |
 | Phase 1 proposal | Sections 4, 5 (core), 9 (core), 11.5, with its own short motivation drawn from 2.1 and 2.3 | 3,500 words |
 | Phase 2 proposal | Section 7.1 to 7.7 with the n-gram example | 4,500 words |
-| Phase 3 proposal | Sections 6 (including the 6.5 sidecar), 8, the lifecycle descriptor fields, 11.1 to 11.3, 12.2 and 12.3 | 5,500 words |
+| Phase 3 proposal | Sections 6 (including the 6.5 discovery chain), 8, the lifecycle descriptor fields, 11.1 to 11.3, 12.2 and 12.3 | 5,500 words |
 | Phase 4 proposal | Sections 6.2 (second half), 7.8, 7.9, 14.18 | 4,500 words |
 | Related work | Section 12.1 and Section 13, as a companion survey in the manner of the backgrounder | 4,500 words |
 
@@ -153,4 +153,4 @@ Each phase document keeps its own motivation, its own RFC 2119 text, its own int
 
 The hosting question is the critical path for phase 3 and should be put to the index specification's authors directly rather than waiting for the thread; it was the first open question in the draft and the November 2 post did not ask it. Phases 1 and 2 can be drafted as standalone documents while that conversation runs, and a reply on the existing thread that leads with the overview and the phase 1 document, with a concrete and small ask, is a better reason to bump the thread than a reminder would be.
 
-Version 4 is being prepared now, so the list of index roots should be raised as a candidate for it early; it is small and serves both index proposals, which makes it a better first ask than the hosting question. The orphan-removal finding of Section 11.3 is also a natural way to open the conversation with the index specification's authors, since it applies to their specification as it stands, and whatever it asks of them this proposal also asks of itself.
+Version 4 is being prepared now, so the list of discovery roots should be raised as a candidate for it early; it is small and serves both index proposals, which makes it a better first ask than the hosting question. The orphan-removal finding of Section 11.3 is also a natural way to open the conversation with the index specification's authors, since it applies to their specification as it stands, and whatever it asks of them this proposal also asks of itself.

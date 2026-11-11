@@ -8,6 +8,51 @@ The study asks when and on which files and columns such indexes are worth buildi
 
 The two are kept apart on purpose. The proposal's case does not depend on any particular answer to the timing question, but the late-built index is the case that exposes every gap the proposal fills, since it needs a type nobody has standardized, a binding to a file rather than a snapshot, a record of how it was built and a rule for compaction, and it is the running example throughout.
 
+## Map of the repository
+
+The repository holds two lines of argument and the code behind one of them. The Puffin proposal and its companions concern index types. The note on contracts asks the same questions of data file formats, storage and commits, and it grew out of the proposal when the same patterns kept turning up elsewhere. The two refer to each other wherever they would share metadata, and neither depends on the other being accepted.
+
+### The Puffin proposal and its companions (`docs/proposals/`)
+
+| Document | Why it is here | Relation to the rest |
+|---|---|---|
+| [`puffin-blob-types-and-compaction.md`](docs/proposals/puffin-blob-types-and-compaction.md) | The full proposal: namespaced blob types, descriptors, data-file-scoped blobs, build configurations and compaction rules. It is the canonical text. | Everything else in this directory is cut from it, condenses it or supports it. The Google Doc copy is synced from it. |
+| [`puffin-blob-types-short.md`](docs/proposals/puffin-blob-types-short.md) | The same design in about a fifth of the length, opening with the three questions we would like answered. Written for readers who will not read the full draft. | Keeps the phases of `phasing.md`, and links into the contracts note wherever the two want the same metadata. |
+| [`puffin-blob-types-background.md`](docs/proposals/puffin-blob-types-background.md) | A plain-language primer on Puffin and indexing for readers new to either. | A companion to the full proposal, with a map of its sections. |
+| [`phasing.md`](docs/proposals/phasing.md) | How the proposal can be adopted in four phases, each able to stand alone, and which phases would need a format version. | Defines the phases the short version and `phase-1-open-blob-types.md` follow. |
+| [`phase-1-open-blob-types.md`](docs/proposals/phase-1-open-blob-types.md) | Phase 1 written as a standalone proposal: identifiers, the registry and the core descriptor. | The first document cut from the full proposal under `phasing.md`. |
+| [`index-reachability.md`](docs/proposals/index-reachability.md) | Evidence that table maintenance deletes or leaks index files it does not know about, and how other formats have handled the same problem. | Applies to the community's secondary index specification as much as to this proposal; motivates the next document. |
+| [`decoupled-index-metadata.md`](docs/proposals/decoupled-index-metadata.md) | A metadata mechanism, a list of discovery roots plus obligations on maintenance, that would serve both index designs. | The remedy for `index-reachability.md`, and one of the version 4 asks in the contracts note. |
+| [`prior-art.md`](docs/proposals/prior-art.md) | What Delta, Hudi, Paimon, Lance, DuckLake and Hive already do for each benefit the proposal offers, and which indexes other systems have withdrawn. | Paired with the contracts survey of the same name, which covers problems instead of benefits. |
+
+### Contracts between Iceberg, its formats, its storage and its writers (`docs/contracts/`)
+
+| Document | Why it is here | Relation to the rest |
+|---|---|---|
+| [`README.md`](docs/contracts/README.md) | A deliberately broad working note on what Iceberg's contracts with data file formats, storage and writers leave unsaid. It defines the vocabulary the other documents use: outcomes, reliance, sidecars, bindings. | Its section on alignment compares it with the Puffin proposal, which faces the same questions for blobs. |
+| [`problems.md`](docs/contracts/problems.md) | A register of problems, numbered E1 onward for those that exist today and V1 onward for those predicted under version 4 proposals, kept apart from their solutions. | Cites the note and the Puffin proposal as sources; every solution document cites it by identifier. |
+| [`prose-fixes.md`](docs/contracts/prose-fixes.md) | Solutions that need only a sentence or two in an existing specification. | The cheapest answers to problems in the register. |
+| [`v4-asks.md`](docs/contracts/v4-asks.md) | Three solutions that need a new field and so would have to ride version 4: a content hash, the read base of a snapshot, and a declaration of what a snapshot depends on. | The third ask carries the discovery roots of `decoupled-index-metadata.md`. |
+| [`feature-versioning.md`](docs/contracts/feature-versioning.md) | An argument that Iceberg should version by declared feature instead of by one table-wide integer, with the condition under which an implementation lacking a feature may proceed. | Generalizes the Puffin proposal's identifiers and descriptors to features of every kind, and answers its open question on minor revisions. |
+| [`prior-art.md`](docs/contracts/prior-art.md) | What other table formats do about each problem in the register. | Organized by the register's identifiers; paired with the proposals' survey. |
+
+### Code
+
+The prototype and the simulator are described in [Contents](#contents) and [The simulator](#the-simulator) below.
+
+| Module | Why it is here | Relation to the rest |
+|---|---|---|
+| `puffin-spi` | The Java prototype of the interfaces the proposal offers to Iceberg, packaged so that moving it upstream is a rename. | Implements the full proposal's identifiers, descriptors, data-file binding and build configurations; its Section 9.5 says what is not yet prototyped. The blob types below build on it. |
+| `blob-types` | Two reference blob types: the n-gram Bloom filter that is the proposal's worked example, and a mergeable half-precision presence filter. | Exercise `puffin-spi` from Java and from Scala. |
+| `simulator` | Measures when building indexes late beats building them with the data, under drifting workloads. | Informs the proposal's motivation; the proposal's case does not depend on its results. |
+
+### Tooling
+
+| Path | Why it is here |
+|---|---|
+| [`tools/gdoc_sync.py`](tools/gdoc_sync.py) | Brings the Google Doc copy of the full proposal up to date by editing only the text that changed, so that review comments survive each sync. |
+| [`.claude/skills/gdoc-sync/`](.claude/skills/gdoc-sync/SKILL.md) | The procedure for running that sync, written for a coding assistant. |
+
 ## Motivation
 
 A data lake has to favor write throughput, which rules out building heavy indexes synchronously with ingest, and yet readers benefit from indexes finer-grained than the file-level min/max statistics that every lake format records for free. Iceberg can already store index-like payloads in [Puffin](https://iceberg.apache.org/puffin-spec/) files, but today it:
