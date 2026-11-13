@@ -15,11 +15,11 @@ Each item names the section it would change, proposes wording, and cites the pro
 **Proposed addition to the list of conditions:**
 
 > * Operations that add a deletion vector or a column file for a data file must verify that the data file is still in the table, and that no deletion vector or column file for the same data file and fields has been added since the operation's base version.
-> * Replace operations must also verify that no deletion vector, position delete file or column file has been added since the operation's base version for any of the data files they replace.
+> * Replace operations must also verify that no deletion vector, position delete file or column file has been added since the operation's base version for any of the data files they replace, unless the operation adds, in the same commit, deletion vectors, position delete files or column files against its output files that remove or supply exactly the rows and values those additions did.
 
 **Addresses:** [E1](problems.md#e1-the-retry-conditions-omit-row-level-deletes), [V4](problems.md#v4-the-retry-conditions-do-not-cover-column-files).
 
-**Remark.** The Java implementation already performs both checks for deletion vectors, so the text codifies its behavior.
+**Remark.** The Java implementation already performs both checks for deletion vectors, so the text codifies its behavior. The exception in the second condition admits a compactor that carries concurrent deletes forward onto its outputs instead of aborting, for example by recording how its rewrite moved rows and translating the deletes' positions accordingly; it states the outcome a repair must achieve without prescribing how, so the condition remains a rule about correctness.
 
 ### 2. What a retry validates against
 

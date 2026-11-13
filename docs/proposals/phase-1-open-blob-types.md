@@ -58,7 +58,7 @@ Since a name cannot contain a dot, the namespace is everything before the final 
 
 The major version belongs to the identifier because the identifier is the only thing every reader is guaranteed to look at. A change under which an existing reader could misinterpret a payload, or rely on a descriptor obligation the type no longer meets, MUST be published under a new identifier with an incremented major version, and readers of the old version then ignore the new one as they would any unknown type. Compatible evolution (an additional optional property, or a descriptor change that only tightens an obligation) leaves the identifier alone and is recorded in the descriptor.
 
-> **TODO (minor versions).** Compatible evolution is recorded in the descriptor, but a blob does not yet record which compatible revision it was written under. A forward-compatible minor-versioning scheme, under which a reader can tell what a newer writer may have added and knows it is safe to ignore, is yet to be designed (Section 8).
+Compatible evolution is recorded in the descriptor. A scheme under which a blob records the compatible revision it was written under, and a reader can tell what a newer writer may have added and whether it is safe to ignore, is proposed in the [note on versioning by feature](../contracts/feature-versioning.md#within-puffin-compatible-revisions-of-a-blob-type) (the reserved properties `type-revision` and `required-features`), and is outside this phase.
 
 | Identifier | Status |
 |---|---|

@@ -3,7 +3,6 @@
 *A condensed form of [Pluggable Puffin Blob Types and a Compaction-Aware Blob Lifecycle](puffin-blob-types-and-compaction.md), for readers who want the design and the questions without the worked examples, the survey of related work or the long tail of open questions.*
 
 **Author:** Alex Cruise  
-**Affiliation:** I work for Cloudera but this is intended to become an open source contribution  
 **Updated:** November 11, 2026  
 **Status:** draft for discussion on the Iceberg dev list
 

@@ -1,14 +1,14 @@
 # iceberg-indexing-ecosystem
 
-This repository holds a proposal for Apache Iceberg and a Java prototype of it, together with the study that motivated both.
+This repository holds proposals for Apache Iceberg, a Java prototype of the first of them, and a set of notes on the contracts between Iceberg, its file formats, its storage and its writers that the proposals kept running into. A simulation study that prompted the work is kept apart, under [Experiments](#experiments), and nothing in the proposals depends on it.
 
 The proposal asks how a table format could host an open ecosystem of per-file indexes in Puffin files: index types that anyone can define and ship under a namespace they own, that engines discover at run time, that record the configuration they were built under, that survive compaction where their structure allows it, and that can never cause a wrong answer when an engine does not understand them.
 
-The study asks when and on which files and columns such indexes are worth building, and in particular whether building them late, in the background once a process has watched the workload, beats building them with the data. We call the late strategy *progressive indexing*, and a simulator measures the trade-off.
-
-The two are kept apart on purpose. The proposal's case does not depend on any particular answer to the timing question, but the late-built index is the case that exposes every gap the proposal fills, since it needs a type nobody has standardized, a binding to a file rather than a snapshot, a record of how it was built and a rule for compaction, and it is the running example throughout.
+The proposal's case does not depend on when indexes are built, but the late-built index is the case that exposes every gap the proposal fills, since it needs a type nobody has standardized, a binding to a file rather than a snapshot, a record of how it was built and a rule for compaction, and it is the running example throughout.
 
 ## Map of the repository
+
+The [roadmap](docs/roadmap.md) is the top-down view: it arranges every proposal below by the question it answers, the problems it addresses and the broader direction it opens, and says what to ask first.
 
 The repository holds two lines of argument and the code behind one of them. The Puffin proposal and its companions concern index types. The note on contracts asks the same questions of data file formats, storage and commits, and it grew out of the proposal when the same patterns kept turning up elsewhere. The two refer to each other wherever they would share metadata, and neither depends on the other being accepted.
 
@@ -33,18 +33,22 @@ The repository holds two lines of argument and the code behind one of them. The 
 | [`problems.md`](docs/contracts/problems.md) | A register of problems, numbered E1 onward for those that exist today and V1 onward for those predicted under version 4 proposals, kept apart from their solutions. | Cites the note and the Puffin proposal as sources; every solution document cites it by identifier. |
 | [`prose-fixes.md`](docs/contracts/prose-fixes.md) | Solutions that need only a sentence or two in an existing specification. | The cheapest answers to problems in the register. |
 | [`v4-asks.md`](docs/contracts/v4-asks.md) | Three solutions that need a new field and so would have to ride version 4: a content hash, the read base of a snapshot, and a declaration of what a snapshot depends on. | The third ask carries the discovery roots of `decoupled-index-metadata.md`. |
+| [`sidecars.md`](docs/contracts/sidecars.md) | A small, mostly editorial proposal that names the class of files Iceberg already tracks beside the files they describe (statistics files, deletion vectors, column files), with a definition, a specification template and two constraints that every existing kind already obeys. | Extracted from Appendix D of the note; the Puffin proposal's blob types are one instance of its template. |
+| [`sidecars-short.md`](docs/contracts/sidecars-short.md) | The sidecar proposal condensed for circulation: the asks, the definition, the two constraints, the rules that keep the abstraction small and the column-file example. | Cut from `sidecars.md`, which remains the reference. |
+| [`catalogs.md`](docs/contracts/catalogs.md) | A record that version 4 makes a catalog necessary for commits, and for some tables for reads, with the Iceberg REST Catalog the de facto requirement for anything beyond a commit; with the implications, a comparison with other formats and the questions worth asking. | Recasts V10 as decided rather than open, and asks each proposal here to say what it assumes of the catalog. |
 | [`feature-versioning.md`](docs/contracts/feature-versioning.md) | An argument that Iceberg should version by declared feature instead of by one table-wide integer, with the condition under which an implementation lacking a feature may proceed. | Generalizes the Puffin proposal's identifiers and descriptors to features of every kind, and answers its open question on minor revisions. |
+| [`v4-as-features.md`](docs/contracts/v4-as-features.md) | The version 4 table specification rewritten as the index feature versioning says it could become: a small core, named versions as sets of features, and what each feature's descriptor cannot express. Illustrative. | Found that version ranges must be per role, which the feature-versioning note now says. |
 | [`prior-art.md`](docs/contracts/prior-art.md) | What other table formats do about each problem in the register. | Organized by the register's identifiers; paired with the proposals' survey. |
 
 ### Code
 
-The prototype and the simulator are described in [Contents](#contents) and [The simulator](#the-simulator) below.
+The prototype is described in [Contents](#contents) below. The simulator is not part of the proposals and is described under [Experiments](#experiments).
 
 | Module | Why it is here | Relation to the rest |
 |---|---|---|
 | `puffin-spi` | The Java prototype of the interfaces the proposal offers to Iceberg, packaged so that moving it upstream is a rename. | Implements the full proposal's identifiers, descriptors, data-file binding and build configurations; its Section 9.5 says what is not yet prototyped. The blob types below build on it. |
 | `blob-types` | Two reference blob types: the n-gram Bloom filter that is the proposal's worked example, and a mergeable half-precision presence filter. | Exercise `puffin-spi` from Java and from Scala. |
-| `simulator` | Measures when building indexes late beats building them with the data, under drifting workloads. | Informs the proposal's motivation; the proposal's case does not depend on its results. |
+| `simulator` | Measures when building indexes late beats building them with the data, under drifting workloads. | Not part of the proposals; see [Experiments](#experiments). |
 
 ### Tooling
 
@@ -65,7 +69,7 @@ Parquet's own Bloom filters are fixed by the writer at write time and can only b
 
 Once indexes are bound to data files, the timing of their construction becomes a policy choice rather than a constraint. An index can be built with the data, inside the compaction that rewrites it, or later in the background by a process that has watched the workload, which is the strategy we call progressive indexing.
 
-Building late lets the choice of index follow a workload that drifts (a new column becomes hot or a column switches from equality to range predicates, and sometimes an incident sends lookups against old data on a column nobody had indexed) and avoids paying for files that compaction is about to discard. Building with the data reaches files that live too briefly for a background builder to help. The simulator measures that trade-off rather than assuming its outcome.
+Building late lets the choice of index follow a workload that drifts (a new column becomes hot or a column switches from equality to range predicates, and sometimes an incident sends lookups against old data on a column nobody had indexed) and avoids paying for files that compaction is about to discard. Building with the data reaches files that live too briefly for a background builder to help.
 
 ## The proposal
 
@@ -133,9 +137,26 @@ It answers equality, prefix and substring predicates either about the stored val
 
 ### `com.cloudera.acruise.progidx.sim`
 
-This package holds the simulator, described in the next section.
+This package holds the simulator, described under [Experiments](#experiments).
 
-## The simulator
+## Building and running
+
+The build uses sbt 2.0 and Java 21; `.sdkmanrc` pins the JDK for SDKMAN users. Scala suites use MUnit and Java suites use JUnit with AssertJ, and `sbt testFull` runs both; tests run in a forked JVM with a 2 GB heap.
+
+```
+sbt testFull                                  # every suite (sbt 2's `test` runs only suites affected by changes)
+sbt publishLocal                              # publish puffin-spi and blob-types to the local Ivy repository
+```
+
+## Status
+
+This is research code. Apart from the Puffin round-trip tests, the code has not been run against a real Iceberg table.
+
+## Experiments
+
+This section is not part of the proposals. The study asks when and on which files and columns such indexes are worth building, and in particular whether building them late, in the background once a process has watched the workload, beats building them with the data. We call the late strategy *progressive indexing*, and a simulator measures the trade-off.
+
+### The simulator
 
 The simulator models one table over three days: continuous ingest, size-tiered compaction with a final settle step per hourly partition, retention, and a query workload with optional scheduled shifts. Everything is a pure function of a seed, so every scheduler sees the same data and the same queries.
 
@@ -182,7 +203,7 @@ In the priced variants, builds made with a commit draw on the same budget as bac
 * *erasure* processes right-to-erasure requests four times a day, each batch looking for every row of five `customer_id`s across the whole table.
 * *streaming* writes the same rows as ten times as many micro-batches, and *streaming-archive* does the same with readers that mostly look at older data.
 
-## Findings so far
+### Findings so far
 
 These come from five-seed sweeps under the cost model above, with a background budget of 4000 per tick. Spreads across seeds are at most half a point of query cost, so the comparisons below are not artifacts of one seed; the absolute numbers matter less than the orderings, since the model is deliberately coarse.
 
@@ -194,13 +215,9 @@ These come from five-seed sweeps under the cost model above, with a background b
 - **Workload drift is the strongest argument for deciding late.** When an incident sends lookups to day-old data on a column nobody had queried, write-time indexing fails to prune a single row (the decision was taken when the column was dormant), while background scheduling prunes about a quarter of the prunable rows and unbudgeted compaction-time building about half.
 - **Read-aware compaction is roughly a wash.** Merging tiny files pays back after a handful of queries, so on tables read while they are written it merges almost as much as plain tiering. With readers mostly on older data it cuts rows rewritten by a quarter but adds requests to the few queries that still read recent data.
 
-## Building and running
-
-The build uses sbt 2.0 and Java 21; `.sdkmanrc` pins the JDK for SDKMAN users. Scala suites use MUnit and Java suites use JUnit with AssertJ, and `sbt testFull` runs both; tests run in a forked JVM with a 2 GB heap.
+### Running the simulator
 
 ```
-sbt testFull                                  # every suite (sbt 2's `test` runs only suites affected by changes)
-sbt publishLocal                              # publish puffin-spi and blob-types to the local Ivy repository
 sbt simulator/run                             # every scenario, one seed, full report
 sbt "simulator/run --scenarios=cdc,erasure"   # only some scenarios
 sbt "simulator/run --kinds=sbloom+f16"        # only some sets of index kinds (labels without spaces)
@@ -220,6 +237,4 @@ For each configuration the single-seed report gives, per scheduler:
 
 It classifies the rows that min/max could not prune, although they did not match the predicate, as *pruned* by an index, let through as a *false positive*, a *mismatch* (indexes on the column, none able to evaluate the predicate's shape) or *missing* (no index on the column). For each scheduled shift it reports the pruned share in its first six hours and over the whole shift.
 
-## Status
-
-This is research code. The simulator's cost model is deliberately coarse (one tick stands for roughly a minute and rows are counted in thousands), because its purpose is to compare strategies under the same workload rather than to predict absolute costs. Apart from the Puffin round-trip tests, the code has not been run against a real Iceberg table.
+The simulator's cost model is deliberately coarse (one tick stands for roughly a minute and rows are counted in thousands), because its purpose is to compare strategies under the same workload rather than to predict absolute costs.

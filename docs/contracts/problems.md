@@ -262,7 +262,7 @@ Solutions: [version 4 ask 1](v4-asks.md#1-a-content-hash-on-tracked-files).
 
 A rewrite of a data file that has column files must fold their values into its output, or carry the column files forward, and deletion vectors already have their own rule. Each kind so far has had its rewrite behavior written into the specification separately, and the next kind will need the same, along with its own conflict rules (E1, V4) and its own reliance (E11, V5). Whether the draft states the rewrite rule for column files has not been checked here.
 
-Solutions: a compaction mode and a reliance declared once per kind, in a descriptor, as the Puffin proposal does for blob types ([Section 8](../proposals/puffin-blob-types-and-compaction.md#8-compaction-semantics-candidate-specification-text)); the kind-specific rule slots of the note's [Appendix D](README.md#slots-for-kind-specific-rules).
+Solutions: a compaction mode and a reliance declared once per kind, in a descriptor, as the Puffin proposal does for blob types ([Section 8](../proposals/puffin-blob-types-and-compaction.md#8-compaction-semantics-candidate-specification-text)); the kind-specific rule slots of the note's [Appendix D](sidecars.md#slots-for-kind-specific-rules).
 
 ### Default values that are expressions
 
@@ -292,7 +292,7 @@ Solutions: [version 4 ask 1](v4-asks.md#1-a-content-hash-on-tracked-files); [pro
 
 Version 4 removes the commit scheme based on atomic rename, which the specification already describes as unsafe on object stores, without providing a replacement based on conditional create. Deployments without a catalog server, HDFS among them, then have no conforming way to commit, and designs that commit through storage alone, such as the discovery chains of the Puffin notes, have no protocol in the specification to align with. A replacement would depend on E7 being fixed.
 
-Solutions: the note's [commit requirement 6](README.md#candidate-requirements).
+Solutions: the note's [commit requirement 6](README.md#candidate-requirements). The removal itself was agreed in 2024 and is better treated as settled; [the note on catalogs](catalogs.md) records the decision and its implications.
 
 ### Secondary indexes
 
