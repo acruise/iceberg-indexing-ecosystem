@@ -46,8 +46,18 @@ lazy val simulator = project
     run / javaOptions += "-Xmx16g" // seed sweeps run many simulations at once
   )
 
+// Enumerates small commit histories and classifies each retry by what the specification's retry conditions say,
+// against a ground truth of serial equivalence. Not published.
+lazy val commitHistories = project
+  .in(file("commit-histories"))
+  .settings(
+    name := "commit-histories",
+    publish / skip := true,
+    run / fork := true
+  )
+
 lazy val root = rootProject
-  .aggregate(puffinSpi, blobTypes, simulator)
+  .aggregate(puffinSpi, blobTypes, simulator, commitHistories)
   .settings(
     name := "progressive-indexing",
     publish / skip := true

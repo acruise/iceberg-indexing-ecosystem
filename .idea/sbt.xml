@@ -9,6 +9,7 @@
           <set>
             <option value="$PROJECT_DIR$" />
             <option value="$PROJECT_DIR$/blob-types" />
+            <option value="$PROJECT_DIR$/commit-histories" />
             <option value="$PROJECT_DIR$/project" />
             <option value="$PROJECT_DIR$/puffin-spi" />
             <option value="$PROJECT_DIR$/simulator" />

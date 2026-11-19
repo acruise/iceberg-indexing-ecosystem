@@ -15,11 +15,21 @@ Each item names the section it would change, proposes wording, and cites the pro
 **Proposed addition to the list of conditions:**
 
 > * Operations that add a deletion vector or a column file for a data file must verify that the data file is still in the table, and that no deletion vector or column file for the same data file and fields has been added since the operation's base version.
-> * Replace operations must also verify that no deletion vector, position delete file or column file has been added since the operation's base version for any of the data files they replace, unless the operation adds, in the same commit, deletion vectors, position delete files or column files against its output files that remove or supply exactly the rows and values those additions did.
+> * Replace and overwrite operations must also verify that no deletion vector, position delete file or column file has been added since the operation's base version for any of the data files they remove, unless the operation adds, in the same commit, deletion vectors, position delete files or column files against its output files that remove or supply exactly the rows and values those additions did.
+> * Replace and overwrite operations must also verify that no equality delete file added since the operation's base version applies to any of the data files they remove, unless that delete file also applies to the operation's output files (as it does when they keep the data sequence number of the operation's base version), or the operation can show that the delete file matches no row of the removed data file, for instance because the delete file's bounds for its equality fields do not overlap the data file's.
+> * Overwrite operations must verify that the files they remove are still in the table, as replace operations must.
 
 **Addresses:** [E1](problems.md#e1-the-retry-conditions-omit-row-level-deletes), [V4](problems.md#v4-the-retry-conditions-do-not-cover-column-files).
 
 **Remark.** The Java implementation already performs both checks for deletion vectors, so the text codifies its behavior. The exception in the second condition admits a compactor that carries concurrent deletes forward onto its outputs instead of aborting, for example by recording how its rewrite moved rows and translating the deletes' positions accordingly; it states the outcome a repair must achieve without prescribing how, so the condition remains a rule about correctness.
+
+The second and third conditions govern overwrite operations as well as replace operations, and the fourth gives overwrites the check that replace operations already have, because the existing list has no rule for `overwrite` at all. A copy-on-write update commits as an overwrite, so without them it would be governed by nothing; the [commit-history harness](../../commit-histories) finds four histories in which such an update, retried over a concurrent deletion vector or equality delete, restores the deleted row under the existing list and under the first three conditions written for replace operations alone.
+
+Because the conditions judge by file rather than by row, they also refuse some retries that would have been correct. When both writers delete the same row, as when a copy-on-write delete races a deletion vector or an equality delete for that row, or two deletion vectors name it, the two deletes agree, and the conditions refuse the later commit all the same. This is the ordinary write-write conflict of optimistic concurrency: the refused writer retries from the new base and loses time, never correctness. The harness counts ten such refusals in its E1 slice, beside four from the conservative bounds test of the third condition.
+
+The same strictness bears on commits of unknown outcome ([E4](problems.md#e4-commits-of-unknown-outcome)). A writer told that its commit failed, when in fact it was applied, retries over its own commit, and the first and fourth conditions now refuse that retry, since its deletion vector or its removed file has already changed. The table stays correct, but the writer reports a failure for a commit that took effect, and may redo the work at a level the table cannot see. In the harness's E4 slice such misreports rise from 30 under the existing list to 80 under these conditions, and fall to none when the commit carries an identity by which the writer can recognize it ([version 4 ask 2](v4-asks.md#2-the-read-base-of-each-snapshot)), or, over the REST protocol, an `Idempotency-Key`.
+
+The third condition differs from the first two in what it can inspect. An equality delete names no file, so whether it touches a replaced file is a question about values, and the condition makes the conflict the default and puts the burden on the operation to rule it out; an implementation that cannot decide treats the delete as a conflict. Its first exception admits a rewrite whose output stays within the delete's reach, which is the position of a compaction that commits at its starting sequence number, and leaves a copy-on-write update, whose output takes the new snapshot's sequence number, subject to the check. The Java implementation performs this check but narrows it by the writer's conflict-detection filter, which misses a delete outside the filter that matches a row of a replaced file; [pull request 18846](https://github.com/apache/iceberg/pull/18846), open as of November 18, 2026, removes the narrowing, after which the text would codify Java's behavior here too. Since version 4 forbids writing new equality deletes ([pull request 17783](https://github.com/apache/iceberg/pull/17783)), the condition governs version 2 and 3 tables, and a version 4 table only when the operation's validation window spans its upgrade; equality deletes that predate the operation's base version were applied when it read, and are no conflict.
 
 ### 2. What a retry validates against
 
@@ -32,6 +42,8 @@ Each item names the section it would change, proposes wording, and cites the pro
 **Addresses:** [E2](problems.md#e2-the-validation-window-and-what-to-do-outside-it-are-unstated).
 
 **Remark.** Without the read base of [version 4 ask 2](v4-asks.md#2-the-read-base-of-each-snapshot), only the writer knows which version its update was based on, so the rule binds writers but cannot be checked by anyone else.
+
+The rule costs progress wherever expiration outpaces writers. A writer that finds any snapshot committed since its base already expired cannot verify, and under this rule must abandon its work and start again from the current version, even when nothing it would have found conflicts. The cost is therefore set by retention relative to the longest interval between a writer's read and its commit: a deployment that expires snapshots faster than its slowest writers commit converts the difference into refusals, and one whose retention covers that interval pays nothing. In the E2 slice of the [commit-history harness](../../commit-histories), where half the concurrent deletes touch a partition the retrying writer never reads, the rule refuses 96 retries that would have been safe beside the 64 it prevents from restoring deleted rows; the proportion reflects how the slice was built, not the rule.
 
 ### 3. Paths are not reused
 
@@ -157,11 +169,11 @@ Each item names the section it would change, proposes wording, and cites the pro
 
 **Proposed addition:**
 
-> Each function defined in this specification states whether its result depends only on its arguments, or also on the context in which it is evaluated, such as the current time or a session's time zone. Where a stored expression calls a context-dependent function, the specification that stores it says what context is used.
+> Each function defined in this specification states whether its result depends only on its arguments, or also on the context in which it is evaluated, such as the current time or a session's time zone. Where a stored expression calls a context-dependent function, the specification that stores it says what context is used, and when and how often the expression is evaluated: once per row, once per statement or once per data file, and whether a retried write evaluates it again.
 
 **Addresses:** [V8](problems.md#v8-defaults-depend-on-context-that-nothing-records).
 
-**Remark.** This is the smallest step toward the classification the note proposes, and it does not settle the draft's special-case rules for defaults.
+**Remark.** This is the smallest step toward the classification the note proposes, and it does not settle the draft's special-case rules for defaults. The clause on when and how often matters because a context-dependent function reads its context once per evaluation. The table specification says only that a `write-default` "is evaluated to populate the field for any record written after the field was added", so a `current_timestamp()` default may give the rows of one insert one value or many, and a retried task, or a statement planned again after a commit conflict, may store a value later than the first attempt's, all within the current text.
 
 ## What is not here
 

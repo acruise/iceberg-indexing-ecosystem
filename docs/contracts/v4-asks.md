@@ -20,13 +20,15 @@ Detail: [bindings and out-of-band mutation](README.md#out-of-band-mutation).
 
 ## 2. The read base of each snapshot
 
-**Ask.** An optional field in each snapshot recording its *read base*: the snapshot the writer actually read from, as distinct from the parent it was finally committed on top of. The two differ after every retry, and today only the parent is recorded.
+**Ask.** An optional field in each snapshot recording its *read base*: the snapshot the writer actually read from, as distinct from the parent it was finally committed on top of. The two differ after every retry, and today only the parent is recorded. With it, an optional *commit identity* chosen by the writer and kept unchanged across its retries.
 
 **Addresses.** [E3](problems.md#e3-validation-is-enforced-by-nothing-outside-the-writer-and-is-undetectable-afterward), validation that nothing outside the writer enforces or can check afterward; [E2](problems.md#e2-the-validation-window-and-what-to-do-outside-it-are-unstated), the unstated validation window; and, in part, [E4](problems.md#e4-commits-of-unknown-outcome), commits of unknown outcome.
 
-**What the field enables.** With the read base recorded, the window of commits a retry had to validate against is fixed and permanent. For the conflicts that silently corrupt a table, which involve the files a commit removes or the files its deletion vectors name, the commit's own changes say what it depended on, so an auditor, a maintenance job or a catalog that chooses to can check the commit without trusting the writer. It also gives commits of unknown outcome, such as a timeout, a way to recognize that they have already been applied.
+**What the field enables.** With the read base recorded, the window of commits a retry had to validate against is fixed and permanent. For the conflicts that silently corrupt a table, which involve the files a commit removes or the files its deletion vectors name, the commit's own changes say what it depended on, so an auditor, a maintenance job or a catalog that chooses to can check the commit without trusting the writer.
 
-**Cost.** One optional field. Validation itself stays a writer's obligation, as now.
+**What the identity adds.** The read base alone does not let a writer whose commit had an unknown outcome, such as a timeout, recognize that the commit was applied. A writer that looks for a snapshot with its own read base and its own change will take an identical commit by another writer for its own, and report as committed a write that was lost. The [commit-history harness](../../commit-histories) finds 15 such histories in its E4 slice, and none once each commit carries an identity. The identity also lets an auditor see one operation committed twice, which no retry condition forbids, since an append can always be applied. The REST catalog now accepts an `Idempotency-Key` on table commits and multi-table transactions, which answers the writer's question for as long as the server keeps the key; it is a property of one protocol, bounded by an advertised lifetime, and leaves nothing in the table for anyone to inspect afterward. Recorded in the snapshot, the identity outlives the key and does not depend on the protocol.
+
+**Cost.** Two optional fields. Validation itself stays a writer's obligation, as now.
 
 Detail: [commit contract](README.md#commit-contract).
 

@@ -77,7 +77,7 @@ The repository holds two lines of work that arrived at this argument separately.
 1. A placement rule: an unreferenced Puffin file lives outside the table location, sharing no string prefix with it (phase 1).
 2. A discovery chain, a numbered sequence of metadata files under a root of its own that advances by conditional create and records the table's UUID (Puffin proposal §6.5). The Iceberg REST Catalog is the expected commit authority for an index wherever it implements the index endpoints; the chain is the floor for catalogs that do not.
 3. A list of discovery roots in version 4 table metadata, with four obligations on maintenance: orphan removal spares the roots, expiration may invoke a collector, purge removes them, and copying a table says what happens to them ([decoupled index metadata](proposals/decoupled-index-metadata.md); [version 4 ask 3](contracts/v4-asks.md#3-declaring-what-a-snapshot-depends-on)).
-4. The name *sidecar* for the class of files that hang from the files they describe, with two constraints every existing kind already obeys: a required sidecar is referenced and committed with its subjects, and a discovered sidecar must be ignorable ([sidecars](contracts/sidecars.md)).
+4. The name *sidecar* for the class of files that hang from the files they describe, with two constraints every existing kind already obeys: a required sidecar is referenced from its subjects and live wherever they are, and a discovered sidecar must be ignorable ([sidecars](contracts/sidecars.md)).
 
 **Addresses.**
 

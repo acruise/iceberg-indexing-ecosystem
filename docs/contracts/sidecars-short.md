@@ -3,7 +3,7 @@
 *A condensed form of the [proposal on sidecars](sidecars.md), for circulation. The full proposal remains the reference; where the two differ, the difference is an omission, not a change of design.*
 
 **Author:** Alex Cruise  
-**Updated:** November 13, 2026  
+**Updated:** November 18, 2026  
 **Status:** draft for discussion on the Iceberg dev list
 
 Iceberg's table specification already contains a class of files under several names: table and partition statistics files, position delete files, Puffin files of deletion vectors, and in version 4 column files. This proposal gives the class one name, one definition and one specification template, so that the next member of the class is specified, maintained and reasoned about the way the last ones should have been. It does not change the format, or the behavior of any conforming implementation.
@@ -44,7 +44,7 @@ Every kind of sidecar states six properties:
 
 1. **Subjects and scope:** a data file, a group of data files, a manifest, a snapshot or the table.
 2. **Binding:** how it identifies each subject, fixed at commit and verifiable by a reader.
-3. **Reference:** *referenced*, named by its subjects' metadata and committed with them, or *discovered*, found by another route.
+3. **Reference:** *referenced*, named by its subjects' metadata, or *discovered*, found by another route.
 4. **Reliance:** whether a reader that does not support the kind may ignore it or must refuse.
 5. **Encoding:** Puffin, a data file format, or anything else; independent of the rest.
 6. **Lifecycle:** when it becomes garbage, and which operations remove it.
@@ -53,7 +53,7 @@ Rules that apply to one kind alone go into seven fixed slots, each written as "n
 
 ## Two constraints that already hold
 
-1. **A required sidecar MUST be referenced from its subjects' metadata and committed in the same snapshot as the subjects it is required for.** Its reachability is then exactly its subjects', and maintenance keeps and collects it correctly without knowing its kind. Position delete files, deletion vectors and column files all satisfy this.
+1. **A required sidecar MUST be referenced from the metadata of every subject that requires it, and MUST be live in every snapshot in which any of those subjects is live.** Its reachability is then exactly the union of its subjects', and maintenance keeps and collects it correctly without knowing its kind. Position delete files, deletion vectors and column files all satisfy this by being committed with the subjects they are first required for; the weaker wording admits a sidecar that a rewrite carries forward or that several subjects share, at the cost of a retry condition, since a commit that removes a sidecar's last subject must not race one that adds a reference to it.
 2. **A discovered sidecar MUST be ignorable.** Whether a discovered sidecar exists at a snapshot is decided when the snapshot is read, not when it was committed, so two reads of one snapshot may differ. That is tolerable only if no reader's answer depends on it.
 
 ## Keeping the abstraction small
