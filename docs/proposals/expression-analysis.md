@@ -1,6 +1,6 @@
 # Coeffect and Effect Analysis for Iceberg Expressions
 
-*A proposal to the Iceberg UDF sync concerning which expressions each specification feature admits and the conditions under which consumers may rely on them.*
+*A proposal to the Iceberg community concerning which expressions each specification feature admits and the conditions under which consumers may rely on them.*
 
 **Author:** Alex Cruise  
 **Updated:** November 20, 2026  
