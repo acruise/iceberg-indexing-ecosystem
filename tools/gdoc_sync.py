@@ -165,8 +165,9 @@ def md_model(path):
             first = True
             for b in item:
                 if b["t"] in ("Plain", "Para"):
-                    out.append(para_from_inlines(b["c"], bullet=(ordered, level)) if first
-                               else para_from_inlines(b["c"], bullet=(ordered, level)))
+                    # Google's importer bullets only an item's first paragraph; later
+                    # paragraphs of the same item are indented, unbulleted paragraphs.
+                    out.append(para_from_inlines(b["c"], bullet=(ordered, level) if first else None))
                     first = False
                 elif b["t"] == "BulletList":
                     list_items(b["c"], False, level + 1, out)
