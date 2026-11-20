@@ -1,4 +1,4 @@
-# Sidecars: A Name for Something Iceberg Already Has (Short Version)
+# Sidecars: A Common Definition for Auxiliary Files in Iceberg (Short Version)
 
 *A condensed form of the [proposal on sidecars](sidecars.md), for circulation. The full proposal remains the reference; where the two differ, the difference is an omission, not a change of design.*
 

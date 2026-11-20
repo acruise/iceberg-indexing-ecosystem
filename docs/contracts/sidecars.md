@@ -1,12 +1,12 @@
-# Sidecars: A Name for Something Iceberg Already Has
+# Sidecars: A Common Definition for Auxiliary Files in Iceberg
 
-*A small proposal to give one name, one definition and one specification template to a class of files that the Iceberg table specification already contains under several names, so that the next members of the class can be specified, maintained and reasoned about uniformly. It began as Appendix D of the [note on contracts](README.md#appendix-d-sidecars), which now summarizes it and points here.*
+*A proposal to give one name, one definition and one specification template to a class of files that the Iceberg table specification already contains under several names, so that the next members of the class can be specified, maintained and reasoned about uniformly. It began as Appendix D of the [note on contracts](README.md#appendix-d-sidecars), which now summarizes it and points here.*
 
 **Author:** Alex Cruise  
 **Updated:** November 18, 2026  
 **Status:** draft, not yet circulated; a [short version](sidecars-short.md) is the one for circulation
 
-Nothing in this proposal changes a field, a file or the behavior of a conforming implementation. Its first two steps are editorial, and the mechanisms that would need a format change are described only so that the label can be judged by where it leads, and are explicitly not requested.
+Nothing in this proposal changes a field, a file or the behavior of a conforming implementation. Its first two steps are editorial, and the mechanisms that would need a format change are described only so that the label can be judged by its consequences, and are explicitly not requested.
 
 ## What we are asking
 
@@ -15,7 +15,7 @@ Nothing in this proposal changes a field, a file or the behavior of a conforming
 
 A third step, two generic mechanisms that each need a format change, is described at the end and is not part of the request.
 
-## The thing already exists
+## Existing instances
 
 Iceberg tracks several kinds of file that contribute no rows to a table, describe one or more other files or the table's state, and are meaningless apart from what they describe. The specification introduced each at a different time, for a different purpose, and answered the same questions about each in a different place:
 
@@ -31,7 +31,7 @@ The questions recur because they are the questions any such file raises: what it
 
 - **Unstated answers.** For three of the five kinds above, the specification never says what a reader that does not support the kind must do. Every implementation infers the answer from the semantics, which is safe only as long as every implementer infers the same thing.
 - **Divergent answers.** A version 2 position delete file has a lifecycle of its own, and nothing removes it with the data files it names, so it can outlive all of them. In version 4 a deletion vector is a field of its data file's entry and is removed with it. Neither rule is wrong, but the second was not arrived at by generalizing the first.
-- **Maintenance taught kind by kind.** Statistics files are listed in table metadata, yet the Java implementation took four releases to teach orphan removal, expiration and purge about them ([note on index reachability](../proposals/index-reachability.md#icebergs-own-record-with-auxiliary-files)), and purge still leaves replaced statistics files behind. Each new kind has so far been made safe by changes to maintenance in every engine (E17 in the [register of problems](problems.md#e17-maintenance-learns-what-to-keep-only-from-snapshot-metadata)).
+- **Maintenance extended kind by kind.** Statistics files are listed in table metadata, yet the Java implementation took four releases to extend orphan removal, expiration and purge to them ([note on index reachability](../proposals/index-reachability.md#icebergs-own-record-with-auxiliary-files)), and purge still leaves replaced statistics files behind. Each new kind has so far been made safe by changes to maintenance in every engine (E17 in the [register of problems](problems.md#e17-maintenance-learns-what-to-keep-only-from-snapshot-metadata)).
 - **Rewrite rules written one at a time.** Deletion vectors have their own rule for what a rewrite does with them, and column files need another (V12). The next kind will need a third, along with its own retry conditions (E1, V4).
 
 Version 4 is already moving in the direction this proposal would name. Deletion vectors, tracked as separate delete files in version 3, become a field of the data file's entry in version 4, and column files are introduced the same way: a required structure is referenced from its subject's own entry and committed with it. That is the simplest way of meeting the first of the two constraints proposed below, arrived at independently. The proposal is that the pattern be named, so that it is applied to the next kind deliberately and not rediscovered.
@@ -44,7 +44,7 @@ A **sidecar** is a file that Iceberg tracks separately from the one or more **su
 
 Two neighboring classes are excluded, each for a reason that matters to maintenance:
 
-- **Metadata files** (manifests, manifest lists, the table metadata file) satisfy every property listed below, but they stand in the opposite relation to reachability. A metadata file is *constitutive*: its content decides which other files belong to the table, and it is garbage when no retained snapshot reaches it. A sidecar is *dependent*: whether it belongs to the table is decided by its subjects, and it is garbage when they are. In the graph that maintenance walks from the catalog's pointer, metadata files are interior nodes and sidecars hang from the nodes they describe, and a term covering both would hide the difference that expiration, orphan removal and purge turn on.
+- **Metadata files** (manifests, manifest lists, the table metadata file) satisfy every property listed below, but they stand in the opposite relation to reachability. A metadata file is *constitutive*: its content decides which other files belong to the table, and it is garbage when no retained snapshot reaches it. A sidecar is *dependent*: whether it belongs to the table is decided by its subjects, and it is garbage when they are. In the graph that maintenance walks from the catalog's pointer, metadata files are interior nodes and sidecars are attached to the nodes they describe, and a term covering both would hide the difference that expiration, orphan removal and purge turn on.
 - **Equality delete files** have no identifiable subjects. An equality delete applies to every data file in its partition with a lower sequence number, a set decided at read time by a rule rather than named, so there is nothing for it to be bound to.
 
 Whether something is a sidecar can depend on the level of the reachability graph from which it is seen. A discovery chain, the numbered metadata files under a root of their own that list discovered sidecars ([note on decoupled index metadata](../proposals/decoupled-index-metadata.md)), is a sidecar of its table, bound to it by the table's UUID, discovered and ignorable. To the index blobs it lists, though, its files are constitutive, since they decide which of those blobs are live. The term therefore names a relationship at one level of the graph, not a fixed kind of file.
@@ -68,7 +68,7 @@ Stated per snapshot, the dependency is simple. At any snapshot a given sidecar e
 
 ## Slots for kind-specific rules
 
-Most kinds also need rules that apply to them alone. Left unplaced, such rules end up wherever their author first needed them. A specification of a kind of sidecar should instead fill a fixed set of slots, and say "none" explicitly where a slot is empty:
+Most kinds also need rules that apply to them alone. Without a designated place, such rules are written wherever their author first needed them. A specification of a kind of sidecar should instead fill a fixed set of slots, and say "none" explicitly where a slot is empty:
 
 1. **Internal structure and addressing.** How the sidecar is divided into parts and how a reference locates one; for example, a version 4 `deletion_vector` offset and size "must exactly match" the offset and length in the Puffin footer.
 2. **Cardinality.** How many sidecars of the kind a subject may have, and how they may overlap; "at most one deletion vector is allowed per data file in a snapshot".
@@ -89,16 +89,16 @@ The first constraint asks that a required sidecar be live wherever its subjects 
 
 ## Keeping the abstraction small
 
-A new abstraction in a specification can fail in two directions. It can *leak*, so that implementations or the wire format start to carry the abstraction itself rather than the things it describes, and every change to the abstraction becomes a change to them. Or it can *balloon*, absorbing every rule anyone attaches to it until it becomes a framework that each new kind must satisfy in full. This proposal is built to do neither, by the following rules, which are part of what is proposed:
+A new abstraction in a specification can fail in two directions. It can *leak*, so that implementations or the wire format start to carry the abstraction itself rather than the things it describes, and every change to the abstraction becomes a change to them. Or it can *accrete*, absorbing every rule an author attaches to it until it becomes a framework that each new kind must satisfy in full. This proposal is built to do neither, by the following rules, which are part of what is proposed:
 
-1. **The label is descriptive, not structural.** No metadata field is named for sidecars, no existing field is renamed, and no implementation is asked to have a sidecar type. A kind of sidecar is specified where it is specified today, in the section of the specification that defines its fields, and the label appears there only as a heading for the template. The wire format does not learn the word until a mechanism needs it, and the mechanisms below are not requested.
+1. **The label is descriptive, not structural.** No metadata field is named for sidecars, no existing field is renamed, and no implementation is asked to have a sidecar type. A kind of sidecar is specified where it is specified today, in the section of the specification that defines its fields, and the label appears there only as a heading for the template. The term does not appear in the wire format until a mechanism needs it, and the mechanisms below are not requested.
 2. **The property list is closed.** The six properties are fixed. A rule that applies to some kinds but not others goes into a slot, not into the definition.
 3. **Promotion requires two users.** A rule moves from a slot into the common properties only when at least two kinds fill that slot the same way and a third is expected to. This is how the definition can grow without its growth being guessed at.
 4. **Empty slots are stated, not filled.** Writing "none" for a slot costs a word and records a decision; leaving it out leaves a question that the next implementer answers silently. The template's value is in making gaps visible, not in obliging any kind to have a rule in every slot.
-5. **The class stays narrow.** Metadata files, equality deletes and things that are not files are excluded even where the properties would fit, because the label earns its keep through what it says about reachability and lifecycle, and it would say less about them if it covered more.
+5. **The class stays narrow.** Metadata files, equality deletes and things that are not files are excluded even where the properties would fit, because the label is justified by what it says about reachability and lifecycle, and it would say less about them if it covered more.
 6. **It is not a plug-in system.** Nothing here concerns run-time discovery of implementations, a registry of kinds or extension by third parties. Those questions arise for Puffin blob types and are taken up separately in the [Puffin proposal](../proposals/puffin-blob-types-and-compaction.md), where a blob type is one instance of a kind of sidecar and needs nothing from this proposal to proceed.
 
-The proposal succeeds if the next kind of sidecar is specified in fewer words than the last, and if a maintenance process that knows only the two constraints above can keep and collect it correctly without having been taught about it.
+The proposal succeeds if the next kind of sidecar is specified in fewer words than the last, and if a maintenance process that knows only the two constraints above can retain and collect it correctly without logic specific to its kind.
 
 ## A worked example: column files
 
@@ -120,17 +120,17 @@ The column files of the version 4 draft are the kind currently being specified, 
 | Concurrent commits | Not in the specification's retry conditions (V4); [prose fix 1](prose-fixes.md#1-retry-conditions-for-deletion-vectors-and-column-files) proposes the rule |
 | Encryption | Its own `key_metadata` |
 
-Two of the thirteen rows are open questions, and one more is a gap the specification has not yet addressed. None of the three is news to the people specifying column files, but the template puts them in a table beside the rows that are settled, and a reviewer of the next kind of sidecar will look for the same thirteen rows.
+Two of the thirteen rows are open questions, and one more is a gap the specification has not yet addressed. All three are known to the authors of the column file specification, but the template puts them in a table beside the rows that are settled, and a reviewer of the next kind of sidecar will look for the same thirteen rows.
 
 Two further rows deserve attention beyond the template. The encoding row draws on the same closed list of formats as data files, so any decision to stop writing ORC and Avro in version 4 applies to column files as well. And the correspondence row is where column files are most exposed: their values are matched to the rows of their base file by position, so they depend on the row-position binding more heavily than anything else in the table ([E13](problems.md#e13-row-positions-are-not-required-to-be-stable), [V6](problems.md#v6-a-column-file-is-bound-to-its-data-file-by-location)).
 
-## Where the label leads, and what is not requested
+## Consequences of the definition, not requested
 
-Two mechanisms follow naturally from the definition, and each needs a format change; a broader direction lies beyond them. All three are described here so that the label can be judged by its consequences. The mechanisms would be proposed only when at least two kinds of sidecar need them, under rule 3 above, and the direction is not proposed at all.
+Two mechanisms follow from the definition, and each needs a format change; a broader direction lies beyond them. All three are described here so that the label can be judged by its consequences. The mechanisms would be proposed only when at least two kinds of sidecar need them, under rule 3 above, and the direction is not proposed at all.
 
 - **Reliance in the reference.** A reader that does not understand a kind cannot read that kind's specification to learn whether it may proceed, so reliance has to be readable from the reference, at a position defined independently of any kind. An instance could then strengthen its kind's reliance but never weaken it. X.509 certificate extensions carry a critical flag for this reason, and PNG encodes the same distinction in the case of each chunk type's first letter.
-- **A carry-forward declaration.** A writer that rewrites a subject but does not understand a sidecar attached to it must either copy the sidecar forward, drop it, or refuse the rewrite, and today it chooses without being told. PNG answers the same question with a further bit per chunk type, saying whether an editor that does not understand the chunk may copy it into a modified image. The Puffin proposal's compaction modes (its Section 8) answer it for blobs; a declaration per kind would answer it for every sidecar (E24, E25).
-- **A waypoint toward describing every stored object.** Each of the stored-object dimensions of the [note on contracts](README.md#appendix-b-dimensions-of-the-contract) is a property a kind of sidecar has to state: its scope, how it is referenced, its reliance, the polarity of what it asserts, what its binding memorializes and what a rewrite does with it. A descriptor for kinds of sidecar is therefore where those dimensions meet, and the same envelope could describe other stored objects wherever it fits, metadata files included, with the Puffin proposal's blob type descriptors as one instance. The dimensions that describe formats, stores, commits and operations would remain outside it, which is why sidecars are a waypoint toward that description and not the destination.
+- **A carry-forward declaration.** A writer that rewrites a subject but does not understand a sidecar attached to it must either copy the sidecar forward, drop it, or refuse the rewrite, and at present it chooses without guidance from the specification. PNG answers the same question with a further bit per chunk type, saying whether an editor that does not understand the chunk may copy it into a modified image. The Puffin proposal's compaction modes (its Section 8) answer it for blobs; a declaration per kind would answer it for every sidecar (E24, E25).
+- **A step toward describing every stored object.** Each of the stored-object dimensions of the [note on contracts](README.md#appendix-b-dimensions-of-the-contract) is a property a kind of sidecar has to state: its scope, how it is referenced, its reliance, the polarity of what it asserts, what its binding memorializes and what a rewrite does with it. A descriptor for kinds of sidecar is therefore where those dimensions meet, and the same envelope could describe other stored objects wherever it fits, metadata files included, with the Puffin proposal's blob type descriptors as one instance. The dimensions that describe formats, stores, commits and operations would remain outside it, which is why sidecars are a step toward that description and not a complete one.
 
 ## Relation to other documents
 
